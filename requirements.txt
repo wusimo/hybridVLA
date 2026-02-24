@@ -1,0 +1,12 @@
+torch>=2.1
+transformers>=4.40
+numpy
+Pillow
+torchvision
+
+# Optional: parameter-efficient fine-tuning (has manual fallback if missing)
+# peft>=0.10
+
+# Optional: data sources
+# tensorflow-datasets    # for Open X-Embodiment
+# h5py                   # for LIBERO
