@@ -85,7 +85,7 @@ class HybridVLAConfig:
     llm_quantize: bool = False  # starts full-precision; QAT applied in Stage 3
     deepstack_layers: list[int] | None = None  # auto-set if None
 
-    # === Action head ===
+    # === Action head (v1 legacy) ===
     action_dim: int = 7  # 6-DoF + gripper
     action_chunk_size: int = 10
     action_num_heads: int = 8
@@ -111,6 +111,48 @@ class HybridVLAConfig:
         default_factory=lambda: ["q_proj", "k_proj", "v_proj", "o_proj", "w1", "w2", "w3"]
     )
 
+    # =====================================================================
+    # v2 EXTENSIONS (LingBot-VLA / π0 / GR00T N1 inspired)
+    # All default to False/disabled so v1 behavior is preserved.
+    # =====================================================================
+
+    # === Action Expert (Mixture-of-Transformers) ===
+    use_action_expert: bool = False  # True enables MoT; False = v1 action head
+    action_expert_depth: int = 24    # number of Action Expert FFN layers
+    action_expert_dim: int | None = None  # None = same as llm_dim
+    action_expert_num_heads: int = 16
+    action_expert_num_kv_heads: int = 4
+    action_expert_mlp_ratio: float = 4.0
+    action_expert_init_from_vlm: bool = True  # warm-start FFN from VLM layers
+
+    # === Flow Matching ===
+    use_flow_matching: bool = False  # True = flow matching loss; False = v1 L1 loss
+    flow_matching_steps: int = 10    # denoising steps at inference
+    flow_noise_schedule: str = "linear"  # "linear" | "cosine"
+
+    # === Multi-View ===
+    num_views: int = 1  # 1 = single-view (v1 compat); 2-4 for multi-view
+    view_names: list[str] = field(
+        default_factory=lambda: ["primary"]
+    )
+
+    # === Depth Perception ===
+    use_depth: bool = False
+    depth_model_id: str = "depth-anything/Depth-Anything-V2-Base-hf"
+    depth_integration: str = "token"  # "token" (project depth features) | "channel" (RGBD)
+    depth_token_dim: int = 384  # hidden dim of the depth model features
+
+    # === Knowledge Insulation (π0.6) ===
+    knowledge_insulation: bool = False  # stop action expert grad from flowing to VLM
+
+    # === Proprioception ===
+    proprio_dim: int = 14   # joint state dim (e.g. 7-DoF x 2 for bimanual)
+    use_proprio: bool = False
+    use_past_actions: bool = False  # feed previous action chunk to action expert
+
+    # === Action horizon (v2 default is longer) ===
+    action_execute_horizon: int = 10  # execute first K steps then replan
+
     # === Derived ===
     @property
     def grid_size(self) -> int:
@@ -121,6 +163,11 @@ class HybridVLAConfig:
         """Number of visual tokens after 2x2 merging."""
         g = self.grid_size
         return (g // 2) * (g // 2)
+
+    @property
+    def effective_action_expert_dim(self) -> int:
+        """Action expert hidden dim, defaulting to llm_dim if not set."""
+        return self.action_expert_dim if self.action_expert_dim is not None else self.llm_dim
 
     def validate(self):
         """Validate configuration consistency."""
@@ -136,6 +183,16 @@ class HybridVLAConfig:
         llm_head_dim = self.llm_dim // self.llm_num_heads
         assert llm_head_dim % 6 == 0, \
             f"LLM head_dim ({llm_head_dim}) must be divisible by 6 for M-RoPE"
+        # v2 validations
+        if self.use_action_expert:
+            ae_dim = self.effective_action_expert_dim
+            assert ae_dim % self.action_expert_num_heads == 0, \
+                "action_expert_dim must be divisible by action_expert_num_heads"
+            assert self.action_expert_num_heads % self.action_expert_num_kv_heads == 0, \
+                "action_expert_num_heads must be divisible by action_expert_num_kv_heads"
+        assert 1 <= self.num_views <= 4, "num_views must be between 1 and 4"
+        assert self.action_execute_horizon <= self.action_chunk_size, \
+            "action_execute_horizon must be <= action_chunk_size"
 
 
 def hybrid_vla_small() -> HybridVLAConfig:
@@ -237,10 +294,103 @@ def hybrid_vla_large() -> HybridVLAConfig:
     )
 
 
+def hybrid_vla_v2_base() -> HybridVLAConfig:
+    """
+    HybridVLA v2 base (~3.6B total): Qwen2.5-VL-3B + 400M Action Expert.
+
+    Adds MoT Action Expert, flow matching, multi-view, depth, proprioception,
+    and knowledge insulation on top of the v1 base config.
+    """
+    return HybridVLAConfig(
+        model_name="hybrid-vla-v2-base",
+        pretrained=PretrainedSources(
+            vision_model_id="google/siglip-large-patch16-384",
+            llm_model_id="Qwen/Qwen2.5-1.5B-Instruct",
+            vlm_model_id="Qwen/Qwen2.5-VL-3B-Instruct",
+            teacher_vision_model_id="google/siglip-large-patch16-384",
+            prefer_vlm_init=True,
+        ),
+        img_size=384,
+        vis_embed_dim=1024,
+        vis_depth=24,
+        vis_num_heads=16,
+        llm_dim=2048,
+        llm_depth=36,
+        llm_num_heads=16,
+        llm_num_kv_heads=2,
+        memory_num_slots=64,
+        # v2 features
+        action_dim=14,  # bimanual: 7-DoF x 2
+        action_chunk_size=50,
+        action_execute_horizon=10,
+        use_action_expert=True,
+        action_expert_depth=24,
+        action_expert_num_heads=16,
+        action_expert_num_kv_heads=4,
+        use_flow_matching=True,
+        flow_matching_steps=10,
+        num_views=3,
+        view_names=["left_shoulder", "right_shoulder", "wrist"],
+        use_depth=True,
+        depth_model_id="depth-anything/Depth-Anything-V2-Base-hf",
+        depth_token_dim=384,
+        knowledge_insulation=True,
+        proprio_dim=14,
+        use_proprio=True,
+        use_past_actions=True,
+    )
+
+
+def hybrid_vla_v2_large() -> HybridVLAConfig:
+    """
+    HybridVLA v2 large (~8.2B total): Qwen2.5-VL-7B + 800M Action Expert.
+    """
+    return HybridVLAConfig(
+        model_name="hybrid-vla-v2-large",
+        pretrained=PretrainedSources(
+            vision_model_id="google/siglip-so400m-patch14-384",
+            llm_model_id="Qwen/Qwen2.5-7B-Instruct",
+            vlm_model_id="Qwen/Qwen2.5-VL-7B-Instruct",
+            teacher_vision_model_id="google/siglip-so400m-patch14-384",
+            prefer_vlm_init=True,
+        ),
+        img_size=384,
+        vis_embed_dim=1152,
+        vis_depth=27,
+        vis_num_heads=16,
+        llm_dim=3584,
+        llm_depth=28,
+        llm_num_heads=28,
+        llm_num_kv_heads=4,
+        memory_num_slots=128,
+        # v2 features
+        action_dim=14,
+        action_chunk_size=50,
+        action_execute_horizon=10,
+        use_action_expert=True,
+        action_expert_depth=28,
+        action_expert_num_heads=28,
+        action_expert_num_kv_heads=4,
+        use_flow_matching=True,
+        flow_matching_steps=10,
+        num_views=3,
+        view_names=["left_shoulder", "right_shoulder", "wrist"],
+        use_depth=True,
+        depth_model_id="depth-anything/Depth-Anything-V2-Large-hf",
+        depth_token_dim=384,
+        knowledge_insulation=True,
+        proprio_dim=14,
+        use_proprio=True,
+        use_past_actions=True,
+    )
+
+
 CONFIG_REGISTRY = {
     "small": hybrid_vla_small,
     "base": hybrid_vla_base,
     "large": hybrid_vla_large,
+    "v2-base": hybrid_vla_v2_base,
+    "v2-large": hybrid_vla_v2_large,
 }
 
 

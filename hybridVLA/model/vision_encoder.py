@@ -263,9 +263,11 @@ class QuantizedVisionEncoder(nn.Module):
         window_size: int = 8,
         global_layers: list[int] | None = None,
         quantize: bool = True,
+        max_views: int = 4,
     ):
         super().__init__()
         self.embed_dim = embed_dim
+        self.llm_dim = llm_dim
         self.patch_embed = PatchEmbed(patch_size, in_channels, embed_dim)
 
         if global_layers is None:
@@ -282,6 +284,9 @@ class QuantizedVisionEncoder(nn.Module):
         self.norm = nn.RMSNorm(embed_dim)
         self.merger = TokenMerger(embed_dim, llm_dim)
         self.mrope = MultimodalRoPE(embed_dim // num_heads, interleave=True)
+
+        # v2: Per-view learnable embeddings to distinguish camera views
+        self.view_embeddings = nn.Embedding(max_views, llm_dim)
 
     def forward(
         self,
@@ -341,3 +346,63 @@ class QuantizedVisionEncoder(nn.Module):
                 features.append(self.norm(x))
 
         return features
+
+    def encode_multi_view(
+        self,
+        images: list[torch.Tensor],
+        return_deepstack: bool = False,
+    ) -> dict[str, torch.Tensor | list[torch.Tensor]]:
+        """
+        Encode multiple camera views through the same ViT and concatenate.
+
+        Each view is encoded independently (shared ViT weights), then tagged
+        with a per-view learnable embedding to distinguish camera positions.
+        Tokens from all views are concatenated into a single sequence.
+
+        Args:
+            images: List of [B, C, H, W] tensors, one per camera view (1-4).
+            return_deepstack: If True, also extract multi-level features.
+
+        Returns:
+            dict with:
+                visual_tokens: [B, num_views * N_per_view, llm_dim]
+                merged_h: spatial height (per single view)
+                merged_w: spatial width (per single view)
+                deepstack_features: (optional) list of [B, num_views * N, D]
+        """
+        all_tokens = []
+        merged_h = merged_w = 0
+        all_ds_features: list[list[torch.Tensor]] | None = [] if return_deepstack else None
+
+        for view_idx, img in enumerate(images):
+            tokens, mh, mw = self.forward(img)
+            # Add per-view embedding
+            view_emb = self.view_embeddings(
+                torch.tensor([view_idx], device=tokens.device)
+            )  # [1, llm_dim]
+            tokens = tokens + view_emb.unsqueeze(0)  # broadcast over batch & tokens
+            all_tokens.append(tokens)
+            merged_h, merged_w = mh, mw
+
+            if return_deepstack:
+                ds = self.get_intermediate_features(img)
+                all_ds_features.append(ds)
+
+        result = {
+            "visual_tokens": torch.cat(all_tokens, dim=1),
+            "merged_h": merged_h,
+            "merged_w": merged_w,
+        }
+
+        if return_deepstack and all_ds_features:
+            # Concatenate per-level across views
+            num_levels = len(all_ds_features[0])
+            merged_ds = []
+            for level in range(num_levels):
+                level_tokens = torch.cat(
+                    [ds[level] for ds in all_ds_features], dim=1
+                )
+                merged_ds.append(level_tokens)
+            result["deepstack_features"] = merged_ds
+
+        return result

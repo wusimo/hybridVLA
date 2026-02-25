@@ -282,3 +282,124 @@ class QuantizedLLMBackbone(nn.Module):
         hidden = self.norm(x)
         logits = self.lm_head(hidden)
         return logits, hidden
+
+    def forward_mot(
+        self,
+        obs_embeds: torch.Tensor,
+        action_embeds: torch.Tensor,
+        obs_position_ids: torch.Tensor,
+        action_position_ids: torch.Tensor | None = None,
+        mot_attention_mask: torch.Tensor | None = None,
+        visual_injections: list[torch.Tensor] | None = None,
+        visual_mask: torch.Tensor | None = None,
+        action_expert: "ActionExpert | None" = None,
+        knowledge_insulation: bool = False,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """
+        MoT forward pass: process observation and action tokens jointly
+        through shared self-attention, but with separate FFNs.
+
+        The VLM backbone's attention layers see the concatenated
+        [obs_tokens | action_tokens] sequence. After shared attention,
+        the observation portion goes through the VLM FFN and the action
+        portion goes through the Action Expert FFN.
+
+        Args:
+            obs_embeds: [B, N_obs, D] observation tokens (visual + text)
+            action_embeds: [B, N_act, D] action expert tokens
+            obs_position_ids: [N_obs, 3] M-RoPE position IDs for obs
+            action_position_ids: [N_act, 3] position IDs for action tokens
+            mot_attention_mask: [1, 1, N_total, N_total] blockwise causal mask
+            visual_injections: DeepStack features (applied to obs portion only)
+            visual_mask: [B, N_obs] mask for visual positions in obs
+            action_expert: ActionExpert module with per-layer FFNs
+            knowledge_insulation: If True, detach obs hidden before action FFN
+
+        Returns:
+            obs_logits: [B, N_obs, vocab_size]
+            obs_hidden: [B, N_obs, D]
+            action_hidden: [B, N_act, D]
+        """
+        N_obs = obs_embeds.shape[1]
+        N_act = action_embeds.shape[1]
+        N_total = N_obs + N_act
+
+        # Build joint position IDs
+        if action_position_ids is None:
+            # Sequential positions after obs tokens
+            device = obs_embeds.device
+            offset = obs_position_ids.max().item() + 1
+            action_position_ids = torch.arange(
+                offset, offset + N_act, device=device
+            ).unsqueeze(-1).expand(-1, 3)
+
+        joint_pos_ids = torch.cat([obs_position_ids, action_position_ids], dim=0)
+
+        # Concatenate obs and action tokens
+        x = torch.cat([obs_embeds, action_embeds], dim=1)
+
+        ds_idx = 0
+        for i, layer in enumerate(self.layers):
+            # Shared self-attention on the joint sequence
+            h = layer.norm1(x)
+            h = h + layer.attn(h, joint_pos_ids, mot_attention_mask, causal=False)
+
+            # Split back into obs and action portions
+            obs_h = h[:, :N_obs]
+            act_h = h[:, N_obs:]
+
+            # Knowledge insulation: stop gradient from action side to VLM
+            if knowledge_insulation:
+                obs_for_action = obs_h.detach()
+            else:
+                obs_for_action = obs_h
+
+            # DeepStack injection (obs side only)
+            vis_inj = None
+            if layer.deepstack_inject and visual_injections is not None and ds_idx < len(visual_injections):
+                vis_inj = visual_injections[ds_idx]
+                ds_idx += 1
+
+            if layer.deepstack_inject and vis_inj is not None:
+                gate = torch.sigmoid(layer.vis_gate)
+                vis = layer.vis_proj(vis_inj)
+                if vis.shape[1] < obs_h.shape[1]:
+                    pad = torch.zeros(
+                        vis.shape[0], obs_h.shape[1] - vis.shape[1], vis.shape[2],
+                        device=vis.device, dtype=vis.dtype,
+                    )
+                    vis = torch.cat([vis, pad], dim=1)
+                elif vis.shape[1] > obs_h.shape[1]:
+                    vis = vis[:, :obs_h.shape[1]]
+                if visual_mask is not None:
+                    mask = visual_mask
+                    if mask.shape[1] < vis.shape[1]:
+                        mask_pad = torch.zeros(
+                            mask.shape[0], vis.shape[1] - mask.shape[1],
+                            device=mask.device, dtype=mask.dtype,
+                        )
+                        mask = torch.cat([mask, mask_pad], dim=1)
+                    vis = vis * mask[:, :vis.shape[1]].unsqueeze(-1)
+                obs_h = obs_h + gate * vis
+
+            # VLM FFN for obs tokens
+            h_obs = layer.norm2(obs_h)
+            obs_h = obs_h + layer.w3(F.silu(layer.w1(h_obs)) * layer.w2(h_obs))
+
+            # Action Expert FFN for action tokens
+            if action_expert is not None:
+                act_h = action_expert.apply_layer(i, act_h)
+            else:
+                # Fallback: use VLM FFN for action tokens too
+                h_act = layer.norm2(act_h)
+                act_h = act_h + layer.w3(F.silu(layer.w1(h_act)) * layer.w2(h_act))
+
+            # Recombine for next layer's shared attention
+            x = torch.cat([obs_h, act_h], dim=1)
+
+        # Final split
+        obs_final = self.norm(x[:, :N_obs])
+        action_final = x[:, N_obs:]  # action expert does its own final norm
+
+        obs_logits = self.lm_head(obs_final)
+        return obs_logits, obs_final, action_final

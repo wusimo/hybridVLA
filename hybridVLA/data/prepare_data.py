@@ -565,6 +565,236 @@ def _extract_heuristic_keypoints(
 # CLI interface
 # =============================================================================
 
+# =============================================================================
+# v2 data converters (multi-view, depth, proprioception)
+# =============================================================================
+
+def convert_droid_to_manifest(
+    droid_dir: str,
+    output_path: str,
+    chunk_size: int = 50,
+    view_names: list[str] | None = None,
+) -> str:
+    """
+    Convert DROID dataset to v2 JSONL manifest format.
+
+    DROID (Toyota Research) contains 1,000+ hours of diverse robot
+    manipulation with 2-3 camera views and proprioceptive state.
+
+    Requires: pip install h5py
+    """
+    try:
+        import h5py
+    except ImportError:
+        raise ImportError("Install h5py: pip install h5py")
+
+    view_names = view_names or ["exterior_image_1_left", "exterior_image_2_left", "wrist_image_left"]
+    droid_path = Path(droid_dir)
+    output_dir = Path(output_path).parent
+    images_dir = output_dir / "images" / "droid"
+    images_dir.mkdir(parents=True, exist_ok=True)
+
+    count = 0
+    with open(output_path, "w") as out_f:
+        for demo_file in sorted(droid_path.rglob("*.hdf5")):
+            try:
+                with h5py.File(demo_file, "r") as f:
+                    if "action" not in f:
+                        continue
+                    actions = f["action"][:]
+                    num_steps = len(actions)
+
+                    # Extract proprioception
+                    if "cartesian_position" in f.get("observation", {}):
+                        proprio = f["observation"]["cartesian_position"][:]
+                    else:
+                        proprio = np.zeros((num_steps, 14))
+
+                    instruction = f.attrs.get("language_instruction", "manipulation task")
+                    if isinstance(instruction, bytes):
+                        instruction = instruction.decode("utf-8")
+
+                    for t in range(num_steps):
+                        future_actions = actions[t:t + chunk_size].tolist()
+                        if len(future_actions) < 2:
+                            continue
+                        past_actions = actions[max(0, t - chunk_size):t].tolist()
+
+                        # Save images per view
+                        images_dict = {}
+                        for vname in view_names:
+                            obs_key = f"observation/{vname}"
+                            if obs_key in f:
+                                img_array = f[obs_key][t]
+                                img_path = str(images_dir / f"{demo_file.stem}_t{t:04d}_{vname}.jpg")
+                                try:
+                                    from PIL import Image
+                                    Image.fromarray(img_array).save(img_path, quality=85)
+                                    images_dict[vname] = img_path
+                                except Exception:
+                                    pass
+
+                        if not images_dict:
+                            continue
+
+                        sample = {
+                            "images": images_dict,
+                            "instruction": instruction,
+                            "actions": future_actions,
+                            "past_actions": past_actions,
+                            "proprioception": proprio[t].tolist(),
+                            "episode_id": demo_file.stem,
+                            "timestep": t,
+                            "robot_type": "franka_panda",
+                        }
+                        out_f.write(json.dumps(sample) + "\n")
+                        count += 1
+            except Exception as e:
+                logger.warning(f"Error processing {demo_file}: {e}")
+                continue
+
+    logger.info(f"DROID conversion complete: {count} samples -> {output_path}")
+    return output_path
+
+
+def convert_aloha_to_manifest(
+    aloha_dir: str,
+    output_path: str,
+    chunk_size: int = 50,
+) -> str:
+    """
+    Convert ALOHA/ACT bimanual dataset to v2 manifest format.
+
+    ALOHA uses 4 camera views and bimanual (14-DoF) control.
+    """
+    try:
+        import h5py
+    except ImportError:
+        raise ImportError("Install h5py: pip install h5py")
+
+    aloha_path = Path(aloha_dir)
+    output_dir = Path(output_path).parent
+    images_dir = output_dir / "images" / "aloha"
+    images_dir.mkdir(parents=True, exist_ok=True)
+
+    count = 0
+    with open(output_path, "w") as out_f:
+        for demo_file in sorted(aloha_path.rglob("episode_*.hdf5")):
+            try:
+                with h5py.File(demo_file, "r") as f:
+                    actions = f["action"][:]
+                    qpos = f["observations"]["qpos"][:]
+                    num_steps = len(actions)
+
+                    view_keys = [k for k in f["observations"]["images"].keys()]
+
+                    for t in range(num_steps):
+                        future_actions = actions[t:t + chunk_size].tolist()
+                        if len(future_actions) < 2:
+                            continue
+                        past_actions = actions[max(0, t - chunk_size):t].tolist()
+
+                        images_dict = {}
+                        for vk in view_keys:
+                            img_array = f["observations"]["images"][vk][t]
+                            img_path = str(images_dir / f"{demo_file.stem}_t{t:04d}_{vk}.jpg")
+                            try:
+                                from PIL import Image
+                                Image.fromarray(img_array).save(img_path, quality=85)
+                                images_dict[vk] = img_path
+                            except Exception:
+                                pass
+
+                        if not images_dict:
+                            continue
+
+                        sample = {
+                            "images": images_dict,
+                            "instruction": "bimanual manipulation task",
+                            "actions": future_actions,
+                            "past_actions": past_actions,
+                            "proprioception": qpos[t].tolist(),
+                            "episode_id": demo_file.stem,
+                            "timestep": t,
+                            "robot_type": "aloha_bimanual",
+                        }
+                        out_f.write(json.dumps(sample) + "\n")
+                        count += 1
+            except Exception as e:
+                logger.warning(f"Error processing {demo_file}: {e}")
+
+    logger.info(f"ALOHA conversion complete: {count} samples -> {output_path}")
+    return output_path
+
+
+def estimate_depth_for_manifest(
+    manifest_path: str,
+    output_dir: str,
+    depth_model_id: str = "depth-anything/Depth-Anything-V2-Base-hf",
+) -> str:
+    """
+    Estimate depth maps for all images in a manifest using a pretrained
+    monocular depth model. Saves depth maps alongside RGB images.
+
+    This is used to generate depth data for datasets that don't include it
+    (e.g., BridgeData, OXE subsets without depth sensors).
+    """
+    logger.info(f"Estimating depth for {manifest_path}")
+    output_path = Path(output_dir) / "depth_estimated"
+    output_path.mkdir(parents=True, exist_ok=True)
+
+    try:
+        from transformers import pipeline
+        depth_pipe = pipeline("depth-estimation", model=depth_model_id, device="cuda")
+    except Exception as e:
+        logger.error(f"Failed to load depth model: {e}. Skipping depth estimation.")
+        return manifest_path
+
+    updated_path = str(Path(manifest_path).with_suffix(".depth.jsonl"))
+    count = 0
+
+    with open(manifest_path) as f_in, open(updated_path, "w") as f_out:
+        for line in f_in:
+            sample = json.loads(line)
+            images_field = sample.get("images", sample.get("image"))
+
+            depth_dict = {}
+            if isinstance(images_field, str):
+                # Single image
+                try:
+                    from PIL import Image
+                    img = Image.open(images_field)
+                    result = depth_pipe(img)
+                    depth_path = str(output_path / f"depth_{count:08d}.png")
+                    result["depth"].save(depth_path)
+                    depth_dict["primary"] = depth_path
+                except Exception:
+                    pass
+            elif isinstance(images_field, dict):
+                for vname, img_path in images_field.items():
+                    try:
+                        from PIL import Image
+                        img = Image.open(img_path)
+                        result = depth_pipe(img)
+                        depth_path = str(output_path / f"depth_{count:08d}_{vname}.png")
+                        result["depth"].save(depth_path)
+                        depth_dict[vname] = depth_path
+                    except Exception:
+                        pass
+
+            if depth_dict:
+                sample["depth_images"] = depth_dict
+
+            f_out.write(json.dumps(sample) + "\n")
+            count += 1
+
+            if count % 1000 == 0:
+                logger.info(f"  Estimated depth for {count} samples")
+
+    logger.info(f"Depth estimation complete: {count} samples -> {updated_path}")
+    return updated_path
+
+
 def main():
     """Command-line entry point for data preparation."""
     import argparse
@@ -597,6 +827,24 @@ def main():
     cop_parser.add_argument("--manifest", required=True, help="Input manifest path")
     cop_parser.add_argument("--output", required=True, help="Output annotated manifest path")
 
+    # v2: Convert DROID data
+    droid_parser = subparsers.add_parser("convert-droid", help="Convert DROID dataset (multi-view)")
+    droid_parser.add_argument("--droid-dir", required=True, help="Path to DROID data directory")
+    droid_parser.add_argument("--output", required=True, help="Output manifest path (.jsonl)")
+    droid_parser.add_argument("--chunk-size", type=int, default=50)
+
+    # v2: Convert ALOHA data
+    aloha_parser = subparsers.add_parser("convert-aloha", help="Convert ALOHA bimanual data")
+    aloha_parser.add_argument("--aloha-dir", required=True, help="Path to ALOHA data directory")
+    aloha_parser.add_argument("--output", required=True, help="Output manifest path (.jsonl)")
+    aloha_parser.add_argument("--chunk-size", type=int, default=50)
+
+    # v2: Estimate depth
+    depth_parser = subparsers.add_parser("estimate-depth", help="Estimate depth maps for a manifest")
+    depth_parser.add_argument("--manifest", required=True, help="Input manifest path")
+    depth_parser.add_argument("--output-dir", required=True, help="Output directory for depth maps")
+    depth_parser.add_argument("--depth-model", default="depth-anything/Depth-Anything-V2-Base-hf")
+
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO)
 
@@ -615,6 +863,15 @@ def main():
 
     elif args.command == "generate-cop":
         generate_cop_annotations(args.manifest, args.output)
+
+    elif args.command == "convert-droid":
+        convert_droid_to_manifest(args.droid_dir, args.output, args.chunk_size)
+
+    elif args.command == "convert-aloha":
+        convert_aloha_to_manifest(args.aloha_dir, args.output, args.chunk_size)
+
+    elif args.command == "estimate-depth":
+        estimate_depth_for_manifest(args.manifest, args.output_dir, args.depth_model)
 
     else:
         parser.print_help()

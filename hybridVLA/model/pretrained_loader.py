@@ -371,3 +371,133 @@ def load_teacher_for_distillation(
     for param in teacher.parameters():
         param.requires_grad = False
     return teacher
+
+
+# ============================================================================
+# v2 functions
+# ============================================================================
+
+def load_depth_model(
+    model_id: str = "depth-anything/Depth-Anything-V2-Base-hf",
+    device: str = "cpu",
+) -> nn.Module | None:
+    """
+    Load a pretrained monocular depth model for the v2 depth encoder.
+
+    The depth model is frozen — it provides features for distillation
+    into the VLM's visual representations.
+
+    Compatible with HuggingFace depth estimation models:
+    - depth-anything/Depth-Anything-V2-{Small,Base,Large}-hf
+    """
+    try:
+        from transformers import AutoModel
+    except ImportError:
+        logger.error("Install transformers: pip install transformers")
+        raise
+
+    logger.info(f"Loading depth model from {model_id}")
+    try:
+        depth_model = AutoModel.from_pretrained(model_id, torch_dtype=torch.float32)
+    except Exception as e:
+        logger.warning(f"Failed to load depth model {model_id}: {e}. "
+                       "Depth features will be zeros.")
+        return None
+
+    depth_model.eval()
+    for param in depth_model.parameters():
+        param.requires_grad = False
+    depth_model = depth_model.to(device)
+
+    logger.info(f"Loaded depth model: {sum(p.numel() for p in depth_model.parameters()):,} params (frozen)")
+    return depth_model
+
+
+def init_action_expert_from_vlm(
+    model: nn.Module,
+    config: HybridVLAConfig,
+) -> int:
+    """
+    Initialize Action Expert FFN layers from the VLM backbone's FFN layers.
+
+    Copies the VLM's SwiGLU FFN weights (w1, w2, w3) into the Action Expert's
+    FFN layers. This warm-start is much better than random initialization —
+    verified by both LingBot-VLA and π0.
+
+    The Action Expert may have fewer layers than the VLM. In this case, we
+    sample evenly from the VLM layers.
+    """
+    if not hasattr(model, "action_expert") or model.action_expert is None:
+        return 0
+    if not hasattr(model, "llm"):
+        return 0
+
+    ae_layers = model.action_expert.layers
+    vlm_layers = model.llm.layers
+    num_ae = len(ae_layers)
+    num_vlm = len(vlm_layers)
+
+    if num_vlm == 0:
+        return 0
+
+    copied = 0
+    for ae_idx in range(num_ae):
+        vlm_idx = int(ae_idx * num_vlm / num_ae)
+        vlm_layer = vlm_layers[vlm_idx]
+        ae_ffn = ae_layers[ae_idx].ffn
+
+        try:
+            if ae_ffn.w1.weight.shape == vlm_layer.w1.weight.shape:
+                ae_ffn.w1.weight.data.copy_(vlm_layer.w1.weight.data)
+                ae_ffn.w2.weight.data.copy_(vlm_layer.w2.weight.data)
+                ae_ffn.w3.weight.data.copy_(vlm_layer.w3.weight.data)
+                copied += 1
+            else:
+                logger.debug(
+                    f"Shape mismatch AE layer {ae_idx} vs VLM layer {vlm_idx}: "
+                    f"AE={ae_ffn.w1.weight.shape}, VLM={vlm_layer.w1.weight.shape}. "
+                    f"Keeping random init."
+                )
+        except Exception as e:
+            logger.debug(f"Could not copy VLM layer {vlm_idx} to AE layer {ae_idx}: {e}")
+
+    logger.info(f"Initialized {copied}/{num_ae} Action Expert FFN layers from VLM backbone")
+    return copied
+
+
+def initialize_from_pretrained_v2(
+    model: nn.Module,
+    config: HybridVLAConfig,
+    device: str = "cpu",
+) -> dict[str, int]:
+    """
+    Top-level function: load all pretrained weights for HybridVLA v2.
+
+    Steps:
+    1. Load VLM weights (same as v1)
+    2. Warm-start Action Expert from VLM FFN (if enabled)
+    3. Load depth model backbone (if enabled)
+
+    Returns dict of loaded parameter counts per source.
+    """
+    result = {}
+
+    # 1. Load VLM weights (v1 path)
+    vlm_loaded = initialize_from_pretrained(model, config, device)
+    for source, keys in vlm_loaded.items():
+        result[source] = len(keys)
+
+    # 2. Warm-start Action Expert from VLM
+    if config.use_action_expert and config.action_expert_init_from_vlm:
+        copied = init_action_expert_from_vlm(model, config)
+        result["action_expert_from_vlm"] = copied
+
+    # 3. Load depth model
+    if config.use_depth and hasattr(model, "depth_encoder") and model.depth_encoder is not None:
+        depth_backbone = load_depth_model(config.depth_model_id, device)
+        if depth_backbone is not None:
+            model.depth_encoder.set_backbone(depth_backbone)
+            depth_params = sum(p.numel() for p in depth_backbone.parameters())
+            result["depth_model"] = depth_params
+
+    return result
