@@ -131,11 +131,11 @@ class HybridVLAConfig:
         assert self.llm_num_heads % self.llm_num_kv_heads == 0, \
             "llm_num_heads must be divisible by llm_num_kv_heads"
         head_dim = self.vis_embed_dim // self.vis_num_heads
-        assert head_dim % 6 == 0, \
-            f"ViT head_dim ({head_dim}) must be divisible by 6 for M-RoPE"
+        assert head_dim % 2 == 0, \
+            f"ViT head_dim ({head_dim}) must be divisible by 2 for M-RoPE"
         llm_head_dim = self.llm_dim // self.llm_num_heads
-        assert llm_head_dim % 6 == 0, \
-            f"LLM head_dim ({llm_head_dim}) must be divisible by 6 for M-RoPE"
+        assert llm_head_dim % 2 == 0, \
+            f"LLM head_dim ({llm_head_dim}) must be divisible by 2 for M-RoPE"
 
 
 def hybrid_vla_small() -> HybridVLAConfig:

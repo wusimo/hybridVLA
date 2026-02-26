@@ -42,15 +42,30 @@ class MultimodalRoPE(nn.Module):
 
     def __init__(self, head_dim: int, base: float = 10000.0, interleave: bool = True):
         super().__init__()
-        assert head_dim % 6 == 0, f"head_dim must be divisible by 6, got {head_dim}"
+        assert head_dim % 2 == 0, f"head_dim must be even, got {head_dim}"
         self.head_dim = head_dim
-        self.component_dim = head_dim // 3  # dim per component (t, h, w)
-        self.half_component = self.component_dim // 2  # for sin/cos pairs
-        self.interleave = interleave
         self.base = base
+        half = head_dim // 2
 
-        freqs = _compute_rope_freqs(self.component_dim, base)
-        self.register_buffer("freqs", freqs, persistent=False)
+         if head_dim % 6 == 0:
+            # Equal split across t/h/w
+            sec = half // 3
+            self.sections = [sec, sec, sec]
+            self.interleave = interleave
+        else:
+            # Unequal split: fewer bands for temporal, more for spatial
+            t = half // 3
+            h = (half - t) // 2
+            w = half - t - h
+            self.sections = [t, h, w]
+            self.interleave = False  # can't interleave unequal sizes
+
+        # Backward-compat aliases
+        self.component_dim = self.sections[0] * 2
+        self.half_component = self.sections[0]
+
+        for i, sec in enumerate(self.sections):
+            self.register_buffer(f"freqs_{i}", _compute_rope_freqs(sec * 2, base), persistent=False)
 
     def _build_position_ids_text(self, seq_len: int, offset: int = 0) -> torch.Tensor:
         """Build position IDs for text: shape [seq_len, 3] with identical t/h/w."""
@@ -109,14 +124,12 @@ class MultimodalRoPE(nn.Module):
             cos, sin: [seq_len, head_dim] rotary embeddings.
         """
         device = position_ids.device
-        freqs = self.freqs.to(device)
 
-        # Compute per-component embeddings: [seq_len, half_component] each
         cos_parts = []
         sin_parts = []
         for i in range(3):
             pos = position_ids[:, i].float().unsqueeze(-1)  # [seq_len, 1]
-            angles = pos * freqs.unsqueeze(0)  # [seq_len, half_component]
+            angles = pos * freqs.unsqueeze(0)  # [seq_len, section_size]
             cos_parts.append(angles.cos())
             sin_parts.append(angles.sin())
 
