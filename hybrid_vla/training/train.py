@@ -543,15 +543,16 @@ def train_stage4_robotics_sft(
     model.freeze_vision_encoder()
 
     # Apply LoRA if not already applied
-    has_lora = any("lora" in n for n, _ in model.named_parameters())
-    if not has_lora:
-        model = apply_lora(model, config)
+    # has_lora = any("lora" in n for n, _ in model.named_parameters())
+    # if not has_lora:
+    #     model = apply_lora(model, config)
 
     # Ensure action head and new modules are trainable
     for module in [model.action_head, model.memory, model.cop]:
         if module is not None:
             for param in module.parameters():
                 param.requires_grad = True
+
 
     trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
     total = sum(p.numel() for p in model.parameters())
@@ -576,13 +577,12 @@ def train_stage4_robotics_sft(
 
         for step, batch in enumerate(train_loader):
             batch = {k: v.to(device) if isinstance(v, torch.Tensor) else v for k, v in batch.items()}
-
             outputs = model(
                 pixel_values=batch["pixel_values"],
                 input_ids=batch.get("input_ids"),
                 action_targets=batch.get("action_targets"),
                 point_targets=batch.get("point_targets"),
-                timestep=batch.get("timestep", torch.zeros(1)).item(),
+                timestep=batch.get("timestep", torch.zeros(1)),
                 mode="action",
                 use_deepstack=True,
             )

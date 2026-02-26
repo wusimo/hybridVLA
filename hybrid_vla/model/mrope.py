@@ -47,19 +47,19 @@ class MultimodalRoPE(nn.Module):
         self.base = base
         half = head_dim // 2
 
-         if head_dim % 6 == 0:
+        if head_dim % 6 == 0:
             # Equal split across t/h/w
             sec = half // 3
             self.sections = [sec, sec, sec]
             self.interleave = interleave
         else:
             # Unequal split: fewer bands for temporal, more for spatial
-            t = half // 3
+            t = half // 2
             h = (half - t) // 2
             w = half - t - h
             self.sections = [t, h, w]
             self.interleave = False  # can't interleave unequal sizes
-
+        self.mrope_sections = ['freqs_0', 'freqs_1', 'freqs_2']
         # Backward-compat aliases
         self.component_dim = self.sections[0] * 2
         self.half_component = self.sections[0]
@@ -129,7 +129,7 @@ class MultimodalRoPE(nn.Module):
         sin_parts = []
         for i in range(3):
             pos = position_ids[:, i].float().unsqueeze(-1)  # [seq_len, 1]
-            angles = pos * freqs.unsqueeze(0)  # [seq_len, section_size]
+            angles = pos * getattr(self, self.mrope_sections[i]).unsqueeze(0)  # [seq_len, section_size]
             cos_parts.append(angles.cos())
             sin_parts.append(angles.sin())
 

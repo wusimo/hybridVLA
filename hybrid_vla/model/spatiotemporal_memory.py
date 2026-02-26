@@ -139,11 +139,10 @@ class SpatiotemporalMemory(nn.Module):
             updated memory: [B, num_slots, D]
         """
         B = memory.shape[0]
-
         # Add temporal encoding to visual features
         t_emb = self.temporal_embed(
-            torch.tensor([timestep], device=memory.device)
-        ).unsqueeze(0).expand(B, visual_features.shape[1], -1)
+            timestep
+        ).unsqueeze(1).expand(B, visual_features.shape[1], -1)
         vis_with_time = visual_features + t_emb
 
         # Memory attends to new visual features

@@ -228,16 +228,16 @@ def load_qwen25_vl_weights(
     We map both the visual_model.* and model.* weight keys.
     """
     try:
-        from transformers import Qwen2VLForConditionalGeneration
+        from transformers import Qwen2_5_VLForConditionalGeneration
     except ImportError:
         logger.warning(
-            "Qwen2VL not available in transformers. "
+            "Qwen2.5VL not available in transformers. "
             "Falling back to separate ViT + LLM loading."
         )
         return set()
 
     logger.info(f"Loading Qwen2.5-VL weights from {model_id}")
-    qwen_vl = Qwen2VLForConditionalGeneration.from_pretrained(
+    qwen_vl = Qwen2_5_VLForConditionalGeneration.from_pretrained(
         model_id, torch_dtype=torch.bfloat16
     )
     src_state = qwen_vl.state_dict()
@@ -248,27 +248,30 @@ def load_qwen25_vl_weights(
     # Map visual encoder keys
     vis_mapping = {}
     for src_key in src_state:
-        if src_key.startswith("visual."):
+        if src_key.startswith("model.visual."):
             # Qwen2.5-VL uses: visual.patch_embed.*, visual.blocks.N.*, visual.merger.*
-            dst_key = src_key.replace("visual.", "vision_encoder.")
+            dst_key = src_key.replace("model.visual.", "vision_encoder.")
             # Qwen-VL attention naming
             dst_key = dst_key.replace(".attn.qkv.", ".attn.qkv.")
             dst_key = dst_key.replace(".attn.proj.", ".attn.proj.")
+            # Qwen-VL mlp naming
+            dst_key = dst_key.replace(".gate_proj.", ".gate_proj.")
+            dst_key = dst_key.replace(".up_proj.", ".up_proj.")
+            dst_key = dst_key.replace(".down_proj.", ".down_proj.")
             vis_mapping[src_key] = dst_key
 
     # Map LLM keys (same mapping as standalone Qwen2.5)
     llm_mapping = {}
     for src_key in src_state:
-        if src_key.startswith("model."):
-            dst_key = src_key.replace("model.embed_tokens.", "llm.tok_emb.")
-            dst_key = dst_key.replace("model.norm.", "llm.norm.")
-            dst_key = dst_key.replace("model.layers.", "llm.layers.")
+        if src_key.startswith("model.language_model"):
+            dst_key = src_key.replace("model.language_model.", "llm.")
+            dst_key = dst_key.replace("embed_tokens.", "tok_emb.")
             dst_key = dst_key.replace(".self_attn.", ".attn.")
-            dst_key = dst_key.replace(".mlp.gate_proj.", ".w1.")
-            dst_key = dst_key.replace(".mlp.up_proj.", ".w2.")
-            dst_key = dst_key.replace(".mlp.down_proj.", ".w3.")
             dst_key = dst_key.replace(".input_layernorm.", ".norm1.")
             dst_key = dst_key.replace(".post_attention_layernorm.", ".norm2.")
+            dst_key = dst_key.replace(".mlp.gate_proj.", ".gate_proj.")
+            dst_key = dst_key.replace(".mlp.up_proj.", ".up_proj.")
+            dst_key = dst_key.replace(".mlp.down_proj.", ".down_proj.")
             llm_mapping[src_key] = dst_key
         elif src_key == "lm_head.weight":
             llm_mapping[src_key] = "llm.lm_head.weight"

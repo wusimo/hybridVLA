@@ -28,12 +28,12 @@ class SwiGLU(nn.Module):
     def __init__(self, in_features: int, hidden_features: int, quantize: bool = True):
         super().__init__()
         Linear = BitLinear158 if quantize else nn.Linear
-        self.w1 = Linear(in_features, hidden_features, bias=False)
-        self.w2 = Linear(in_features, hidden_features, bias=False)
-        self.w3 = Linear(hidden_features, in_features, bias=False)
+        self.gate_proj = Linear(in_features, hidden_features, bias=True)
+        self.up_proj = Linear(in_features, hidden_features, bias=True)
+        self.down_proj = Linear(hidden_features, in_features, bias=True)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.w3(F.silu(self.w1(x)) * self.w2(x))
+        return self.down_proj(F.silu(self.gate_proj(x)) * self.up_proj(x))
 
 
 class WindowAttention(nn.Module):
@@ -62,8 +62,8 @@ class WindowAttention(nn.Module):
         self.scale = self.head_dim ** -0.5
 
         Linear = BitLinear158 if quantize else nn.Linear
-        self.qkv = Linear(dim, 3 * dim, bias=False)
-        self.proj = Linear(dim, dim, bias=False)
+        self.qkv = Linear(dim, 3 * dim, bias=True)
+        self.proj = Linear(dim, dim, bias=True)
         self.mrope = MultimodalRoPE(self.head_dim, interleave=True)
 
     def _window_partition(self, x: torch.Tensor, h: int, w: int) -> tuple[torch.Tensor, int, int]:
@@ -158,7 +158,7 @@ class VisionBlock(nn.Module):
         self.norm1 = nn.RMSNorm(dim)
         self.attn = WindowAttention(dim, num_heads, window_size, quantize)
         self.norm2 = nn.RMSNorm(dim)
-        mlp_hidden = int(dim * mlp_ratio * 2 / 3)  # SwiGLU conventional sizing
+        mlp_hidden = 3420  # SwiGLU conventional sizing
         self.mlp = SwiGLU(dim, mlp_hidden, quantize)
 
     def forward(
@@ -203,9 +203,9 @@ class TokenMerger(nn.Module):
     def __init__(self, vis_dim: int, llm_dim: int):
         super().__init__()
         self.mlp = nn.Sequential(
-            nn.Linear(vis_dim * 4, llm_dim),
+            nn.Linear(vis_dim * 4, vis_dim * 4),
             nn.GELU(),
-            nn.Linear(llm_dim, llm_dim),
+            nn.Linear(vis_dim * 4, llm_dim),
         )
 
     def forward(self, x: torch.Tensor, grid_h: int, grid_w: int) -> tuple[torch.Tensor, int, int]:

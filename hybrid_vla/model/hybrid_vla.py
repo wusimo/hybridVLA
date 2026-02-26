@@ -134,6 +134,10 @@ class HybridVLA(nn.Module):
         self.vis_start_embed = nn.Parameter(torch.randn(1, 1, config.llm_dim) * 0.02)
         self.vis_end_embed = nn.Parameter(torch.randn(1, 1, config.llm_dim) * 0.02)
 
+        # peft config
+        self.prepare_inputs_for_generation = None
+        self.config.model_type = None
+
     def encode_image(
         self,
         pixel_values: torch.Tensor,

@@ -38,6 +38,7 @@ data/images/
 data/*.hdf5
 data/*.tfrecord
 *.jsonl
+data/
 
 # Jupyter
 .ipynb_checkpoints/

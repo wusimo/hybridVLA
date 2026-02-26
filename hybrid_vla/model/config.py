@@ -192,8 +192,8 @@ def hybrid_vla_base() -> HybridVLAConfig:
             prefer_vlm_init=True,
         ),
         img_size=384,
-        vis_embed_dim=1024,
-        vis_depth=24,
+        vis_embed_dim=1280,
+        vis_depth=32,
         vis_num_heads=16,
         llm_dim=2048,  # Qwen2.5-VL-3B
         llm_depth=36,  # Qwen2.5-VL-3B

@@ -52,9 +52,9 @@ class GQAttention(nn.Module):
         self.num_kv_groups = num_heads // self.num_kv_heads
 
         Linear = BitLinear158 if quantize else nn.Linear
-        self.q_proj = Linear(dim, dim, bias=False)
-        self.k_proj = Linear(dim, self.kv_dim, bias=False)
-        self.v_proj = Linear(dim, self.kv_dim, bias=False)
+        self.q_proj = Linear(dim, dim, bias=True)
+        self.k_proj = Linear(dim, self.kv_dim, bias=True)
+        self.v_proj = Linear(dim, self.kv_dim, bias=True)
         self.o_proj = Linear(dim, dim, bias=False)
 
         self.mrope = MultimodalRoPE(self.head_dim, interleave=True)
@@ -125,9 +125,9 @@ class LLMBlock(nn.Module):
 
         mlp_hidden = int(dim * mlp_ratio * 2 / 3)
         Linear = BitLinear158 if quantize else nn.Linear
-        self.w1 = Linear(dim, mlp_hidden, bias=False)
-        self.w2 = Linear(dim, mlp_hidden, bias=False)
-        self.w3 = Linear(mlp_hidden, dim, bias=False)
+        self.gate_proj = Linear(dim, mlp_hidden, bias=False)
+        self.up_proj = Linear(dim, mlp_hidden, bias=False)
+        self.down_proj = Linear(mlp_hidden, dim, bias=False)
 
         self.deepstack_inject = deepstack_inject
         if deepstack_inject:
@@ -175,7 +175,7 @@ class LLMBlock(nn.Module):
 
         # SwiGLU FFN
         h = self.norm2(x)
-        x = x + self.w3(F.silu(self.w1(h)) * self.w2(h))
+        x = x + self.down_proj(F.silu(self.gate_proj(h)) * self.up_proj(h))
         return x
 
 
