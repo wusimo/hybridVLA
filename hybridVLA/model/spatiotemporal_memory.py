@@ -13,6 +13,7 @@ cross-attention from incoming visual features, implementing a form of
 "working memory" for embodied reasoning.
 """
 
+import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -112,8 +113,10 @@ class SpatiotemporalMemory(nn.Module):
         # Read: query tokens attend to memory
         self.read_attn = MemorySlotAttention(dim, num_heads)
 
-        # Temporal position encoding for memory timesteps
-        self.temporal_embed = nn.Embedding(256, dim)  # up to 256 timesteps
+        # Temporal position encoding for memory timesteps (sinusoidal, no cap)
+        self._temporal_div = torch.exp(
+            torch.arange(0, dim, 2).float() * -(math.log(10000.0) / dim)
+            )
 
         self.norm = nn.RMSNorm(dim)
 
@@ -140,10 +143,11 @@ class SpatiotemporalMemory(nn.Module):
         """
         B = memory.shape[0]
 
-        # Add temporal encoding to visual features
-        t_emb = self.temporal_embed(
-            torch.tensor([timestep], device=memory.device)
-        ).unsqueeze(0).expand(B, visual_features.shape[1], -1)
+        # Add sinusoidal temporal encoding to visual features
+        div = self._temporal_div.to(memory.device)
+        t = torch.tensor([timestep], device=memory.device, dtype=torch.float32)
+        angles = t * div  # [dim // 2]
+        t_emb = torch.cat([angles.sin(), angles.cos()], dim=-1)  #[dim]
         vis_with_time = visual_features + t_emb
 
         # Memory attends to new visual features
