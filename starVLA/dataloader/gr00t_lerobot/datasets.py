@@ -1688,7 +1688,33 @@ class LeRobotMixtureDataset(Dataset):
                     if os.path.exists(video_path):
                         break
                     index = random.randint(0, len(self) - 1)
+                
+                # === 新增：构建稀疏历史记忆（最多5帧，间隔5步）===
+                memory_images = []  # 存储历史图像，按时间顺序：[t-25, t-20, ..., t-5]
+                max_memory_steps = 5      # 最多记5帧
+                interval = 5              # 每隔5步采一帧
+
+                # 从当前 step 往前回溯
+                for i in range(1, max_memory_steps + 1):
+                    hist_step = step - i * interval
+                    if hist_step < 0:
+                        break  # 超出轨迹起点，停止
                     
+                    try:
+                        hist_raw = dataset.get_step_data(trajectory_id, hist_step)
+                        hist_data = dataset.transforms(hist_raw)
+                        
+                        # 提取所有视角并 resize（和当前帧一致）
+                        hist_frame_views = []
+                        for video_key in dataset.modality_keys["video"]:
+                            img = hist_data[video_key][0]
+                            img = Image.fromarray(img).resize((224, 224))
+                            hist_frame_views.append(img)
+                        memory_images.append(hist_frame_views)  # 保存这一历史时刻的所有视角
+                    except Exception:
+                        # 如果某历史步损坏，跳过（不中断）
+                        continue
+
                 raw_data = dataset.get_step_data(trajectory_id, step)    
                 data = dataset.transforms(raw_data)
                 
@@ -1720,7 +1746,7 @@ class LeRobotMixtureDataset(Dataset):
                 state = np.concatenate(state, axis=1).astype(np.float16)
                 
                 state = None
-                
+
                 if self.data_cfg is not None and self.data_cfg.get("include_state", False) not in ["False", False]:
                     
                     state = []
@@ -1728,9 +1754,9 @@ class LeRobotMixtureDataset(Dataset):
                         state.append(data[state_key])
                     state = np.concatenate(state, axis=1).astype(np.float16)
                     # prim_images
-                    return dict(action=action, image=all_images, lang=language, state=state)
+                    return dict(action=action, image=all_images, lang=language, state=state, memory=memory_images)
 
-                return dict(action=action, image=all_images, lang=language)
+                return dict(action=action, image=all_images, lang=language, memory=memory_images)
                 
             except Exception as e:
                 last_exception = e

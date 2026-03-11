@@ -166,6 +166,9 @@ pip install -r requirements.txt
 # Install FlashAttention2
 pip install flash-attn --no-build-isolation
 
+# Install transformer-4.57
+pip install -e ./transformer
+
 # Install starVLA
 pip install -e .
 ```

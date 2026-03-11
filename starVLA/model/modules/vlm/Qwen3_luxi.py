@@ -59,6 +59,7 @@ class _QWen3_VL_luxi_Interface(nn.Module):
             attn_implementation="flash_attention_2",
             dtype=torch.bfloat16,
         )
+        model.model.memory_mode = True
         processor = AutoProcessor.from_pretrained(model_id)
         processor.tokenizer.padding_side = "left"
 

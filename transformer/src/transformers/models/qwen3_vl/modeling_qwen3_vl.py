@@ -25,7 +25,8 @@ from typing import Any, Callable, Optional, Union
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-
+from typing import List
+from PIL import Image
 from ...activations import ACT2FN
 from ...cache_utils import Cache, DynamicCache
 from ...generation import GenerationMixin
@@ -41,7 +42,7 @@ from ...utils import TransformersKwargs, auto_docstring, is_torchdynamo_compilin
 from ...utils.deprecation import deprecate_kwarg
 from ...utils.generic import check_model_inputs
 from .configuration_qwen3_vl import Qwen3VLConfig, Qwen3VLTextConfig, Qwen3VLVisionConfig
-
+from ...modeling_memory import ShortTermMemoryBank
 
 class Qwen3VLVisionMLP(nn.Module):
     def __init__(self, config):
@@ -892,12 +893,14 @@ class Qwen3VLModel(Qwen3VLPreTrainedModel):
     config: Qwen3VLConfig
     _no_split_modules = ["Qwen3VLTextDecoderLayer", "Qwen3VLVisionBlock"]
 
-    def __init__(self, config):
+    def __init__(self, config, memory_mode=True):
         super().__init__(config)
         self.visual = Qwen3VLVisionModel._from_config(config.vision_config)
         self.language_model = Qwen3VLTextModel._from_config(config.text_config)
         self.rope_deltas = None  # cache rope_deltas here
-
+        self.memory_mode = memory_mode
+        if self.memory_mode:
+            self.memory = ShortTermMemoryBank(dim=config.vision_config.out_hidden_size)
         # Initialize weights and apply final processing
         self.post_init()
 
@@ -1103,6 +1106,87 @@ class Qwen3VLModel(Qwen3VLPreTrainedModel):
 
         return special_image_mask, special_video_mask
 
+    def encode_memory_images(
+        self,
+        pixel_values: List[List[List[Image.Image]]],  # [B][X_i][2] → PIL Image
+        image_grid_thw: torch.LongTensor,             # [B * 2, 3]
+        image_processor,                              # e.g., Qwen2VLImageProcessor
+    ) -> List[torch.Tensor]:
+        """
+        Encode variable-length multi-view memory images using Qwen3VLVisionModel.
+        
+        Args:
+            pixel_values: List of B samples.
+                          Each sample: List of X_i frames.
+                          Each frame: List of 2 PIL Images (left/right or view0/view1).
+            image_grid_thw: Tensor of shape [B * 2, 3]. 
+                            The first 2 rows for sample0, next 2 for sample1, etc.
+            image_processor: HuggingFace image processor to convert PIL → tensor.
+
+        Returns:
+            features_list: List of B tensors, each [X_i, 2, D]
+        """
+        B = len(pixel_values)
+        if B == 0:
+            return []
+
+        # Validate image_grid_thw shape
+        assert image_grid_thw.shape == (B * 2, 3), f"Expected [B*2, 3], got {image_grid_thw.shape}"
+
+        # Step 1: Flatten all PIL images and record mapping
+        all_pil_images: List[Image.Image] = []
+        frame_view_info: List[tuple] = []  # (sample_idx, frame_idx, view_idx)
+        frame_counts: List[int] = []       # X_i for each sample
+
+        for i, frames in enumerate(pixel_values):
+            X_i = len(frames)
+            frame_counts.append(X_i)
+            for t, views in enumerate(frames):
+                assert len(views) == 2, "Each frame must have exactly 2 views"
+                for v, img in enumerate(views):
+                    all_pil_images.append(img)
+                    frame_view_info.append((i, t, v))
+
+        N_total = len(all_pil_images)
+        if N_total == 0:
+            D = self.config.vision_config.out_hidden_size
+            return [torch.empty(X, 2, D, device=image_grid_thw.device) for X in frame_counts]
+
+        # Step 2: Preprocess all images at once
+        processed = image_processor(images=all_pil_images, return_tensors="pt")
+        pixel_values_tensor = processed["pixel_values"].to(image_grid_thw.device)  # [N_total, C, H, W]
+
+        # Step 3: Expand image_grid_thw to per-image level
+        # For sample i, its 2 grids are at [i*2 : i*2+2]
+        # We need to repeat them X_i times
+        expanded_grids = []
+        for i in range(B):
+            grids_for_sample = image_grid_thw[i * 2 : (i + 1) * 2]  # [2, 3]
+            X_i = frame_counts[i]
+            # Repeat each view's grid for all X_i frames
+            # Result: [X_i * 2, 3]
+            repeated = grids_for_sample.repeat_interleave(X_i, dim=0)  # [2*X_i, 3]
+            expanded_grids.append(repeated)
+
+        final_grid_thw = torch.cat(expanded_grids, dim=0)  # [N_total, 3]
+        assert final_grid_thw.shape == (N_total, 3)
+
+        # Step 4: Extract features using Qwen3VLVisionModel
+        # Note: Qwen3VLVisionModel expects (pixel_values, grid_thw)
+        features_flat = self.visual(pixel_values_tensor, grid_thw=final_grid_thw)  # [N_total, D]
+        D = features_flat.shape[-1]
+
+        # Step 5: Reconstruct per-sample structure
+        features_list = []
+        for X_i in frame_counts:
+            feat = torch.empty(X_i, 2, D, device=features_flat.device, dtype=features_flat.dtype)
+            features_list.append(feat)
+
+        for idx, (i, t, v) in enumerate(frame_view_info):
+            features_list[i][t, v] = features_flat[idx]
+
+        return features_list
+
     @auto_docstring
     @check_model_inputs
     def forward(
@@ -1219,6 +1303,17 @@ class Qwen3VLModel(Qwen3VLPreTrainedModel):
                     delta = delta.repeat_interleave(batch_size // delta.shape[0], dim=0)
                 position_ids = position_ids.add(delta)
                 position_ids = position_ids.unsqueeze(0).expand(3, -1, -1)
+
+        if self.memory_mode == True:
+            batch_size, _, _ = inputs_embeds.shape
+            _, dim = deepstack_visual_embeds[0].shape
+            # 将data中的memory部分拿出来
+            visual_memorys = kwargs['memorys'] # [batchsize,x,2,64,dim]
+            for i , _ in enumerate(deepstack_visual_embeds):
+                deepstack_visual_embeds[i] = deepstack_visual_embeds[i].view(batch_size, 2, -1, dim) # [Batchsize,2,64,dim]
+                for j , _ in enumerate(deepstack_visual_embeds[i]):
+                    deepstack_visual_embeds[i][j] = self.memory(visual_memorys[j], deepstack_visual_embeds[i][j], timestep=5)
+                deepstack_visual_embeds[i] = deepstack_visual_embeds[i].view(-1, dim)
 
         outputs = self.language_model(
             input_ids=None,

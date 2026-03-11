@@ -169,6 +169,147 @@ class _QWen3_VL_Interface(nn.Module):
 
         return batch_inputs.to(self.model.device)
 
+    def build_qwenvl_inputs_with_memorys(
+        self,
+        images,
+        instructions,
+        memorys,  # List[List[List[Image.Image]]], [B][X_i][2]
+        solutions=None,
+        **kwargs
+    ):
+        """
+        Build model inputs from raw data.
+        Also preprocess memory images into visual features.
+        """
+        assert len(images) == len(instructions), "Images and instructions must have the same length"
+        B = len(images)
+
+        # --- Step 1: Build chat messages (unchanged) ---
+        messages = []
+        for imgs, instruction in zip(images, instructions):
+            content = [{"type": "image", "image": img} for img in imgs]
+            if "CoT_prompt" in self.config.datasets.vla_data:
+                CoT_prompt = self.config.datasets.vla_data.get("CoT_prompt", "")
+                prompt = CoT_prompt.replace("{instruction}", instruction)
+            else:
+                prompt = instruction
+            content.append({"type": "text", "text": prompt})
+            msg = [{"role": "user", "content": content}]
+            if solutions is not None:
+                solution = solutions[len(messages)]
+                msg.append({"role": "assistant", "content": [{"type": "text", "text": solution}]})
+            messages.append(msg)
+
+        # --- Step 2: Tokenize main inputs ---
+        batch_inputs = self.processor.apply_chat_template(
+            messages,
+            tokenize=True,
+            padding=True,
+            add_generation_prompt=True,
+            return_dict=True,
+            return_tensors="pt"
+        )
+
+        # --- Step 3: Process memory images into features ---
+        if memorys and any(memorys):  # check non-empty
+            # Flatten all memory images and collect metadata
+            all_memory_images = []
+            frame_counts = []  # X_i for each sample
+            for mem in memorys:
+                X_i = len(mem)
+                frame_counts.append(X_i)
+                for frame in mem:
+                    assert len(frame) == 2, "Each memory frame must have exactly 2 views"
+                    all_memory_images.extend(frame)  # [view0, view1]
+            # Preprocess all memory images at once
+            if all_memory_images:
+                processed_mem = self.processor.image_processor(
+                    images=all_memory_images,
+                    return_tensors="pt"
+                )
+                pixel_values_mem = processed_mem["pixel_values"]
+                # Construct image_grid_thw for memory images
+                # For Qwen-VL, grid_thw can be inferred from image size, but we use processor's method
+                # Alternative: use the same logic as in processor to get grid_thw
+                # Since Qwen2VLImageProcessor doesn't return grid_thw directly, we compute it:
+                # But actually, in Qwen3-VL, grid_thw is computed from image size and config.
+                # We'll use a helper to generate it.
+
+                # Get grid_thw for each image
+                grid_thws = []
+                for img in all_memory_images:
+                    # Use the same logic as Qwen2VLImageProcessor to compute thw
+                    # This is a simplified version — ideally reuse internal method
+                    w, h = img.size
+                    # From Qwen-VL: patch_size=14, max_pixels=... but we use dynamic
+                    # Actually, the vision model expects grid_thw = [t, h_patches, w_patches]
+                    # Since t=1 for static images:
+                    patch_size = 14
+                    h_patches = h // patch_size
+                    w_patches = w // patch_size
+                    grid_thws.append([1, h_patches, w_patches])
+                image_grid_thw_mem = torch.tensor(grid_thws, dtype=torch.long)  # [N_total, 3]
+
+                # Move to same device as model (will be moved later, but safe)
+                pixel_values_mem = pixel_values_mem.to(self.model.device)
+                image_grid_thw_mem = image_grid_thw_mem.to(self.model.device)
+
+                # Extract features using self.model.visual
+                with torch.no_grad():  # or not, depending on training
+                    vision_output = self.model.visual(
+                        pixel_values_mem, grid_thw=image_grid_thw_mem
+                    )  # [N_total, D]
+                # Reconstruct per-sample structure: [B] -> each [X_i, 2, D]
+                # Handle different return types
+                if isinstance(vision_output, tuple):
+                    memory_features_flat = vision_output[0]  # usually the features
+                elif hasattr(vision_output, 'last_hidden_state'):
+                    memory_features_flat = vision_output.last_hidden_state
+                else:
+                    memory_features_flat = vision_output  # assume it's a tensor
+                D = memory_features_flat.shape[-1]
+                memory_features_list = []
+                idx = 0
+                for X_i in frame_counts:
+                    feat = memory_features_flat[idx : idx + X_i * 2 * 64]  # [X_i*2, D]
+                    feat = feat.view(X_i, 2, 64, D)  # [X_i, 2, D]
+                    memory_features_list.append(feat)
+                    idx += X_i * 2 * 64
+
+                batch_inputs['memorys'] = memory_features_list
+            else:
+                # No memory images
+                D = self.config.vision_config.out_hidden_size
+                batch_inputs['memorys'] = [
+                    torch.empty(0, 2, 64, D, device=self.model.device) for _ in memorys
+                ]
+        else:
+            # No memory provided
+            D = self.config.vision_config.out_hidden_size
+            batch_inputs['memorys'] = [
+                torch.empty(0, 2, 64, D, device=self.model.device) for _ in range(B)
+            ]
+
+        # --- Step 4: Handle labels (unchanged) ---
+        if solutions is not None:
+            action_token_min = _ACTION_TOKEN_MIN
+            action_token_max = _ACTION_TOKEN_MAX
+            labels = batch_inputs['input_ids'].clone()
+            for i in range(labels.size(0)):
+                seq = labels[i]
+                mask_seq = (seq >= action_token_min) & (seq <= action_token_max)
+                nonzero_indices = torch.nonzero(mask_seq, as_tuple=False)
+                if nonzero_indices.numel() > 0:
+                    first_action_index = nonzero_indices[0].item()
+                    seq[:first_action_index] = IGNORE_INDEX
+                else:
+                    seq[:] = IGNORE_INDEX
+                    RuntimeWarning("Action tokens not found in tokenizer.")
+            labels[labels == self.processor.tokenizer.pad_token_id] = -100
+            batch_inputs['labels'] = labels
+
+        return batch_inputs.to(self.model.device)
+
 
 
 

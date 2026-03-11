@@ -1,7 +1,7 @@
 
 export NCCL_SOCKET_IFNAME=lo,eth0,ib0  # 优先使用 loopback
 export NCCL_IB_HCA=mlx5_2,mlx5_3
-
+export CUDA_VISIBLE_DEVICES=0,1,2,3
 # used for check save when communication
 export NCCL_BLOCKING_WAIT=1
 export NCCL_ASYNC_ERROR_HANDLING=1
@@ -30,7 +30,7 @@ cp $0 ${output_dir}/
 
 
 accelerate launch \
-  --config_file starVLA/config/deepseeds/deepspeed_zero3.yaml \
+  --config_file starVLA/config/deepseeds/deepspeed_zero2.yaml \
   --num_processes 4 \
   starVLA/training/train_starvla.py \
   --config_yaml ${config_yaml} \

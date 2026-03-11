@@ -81,7 +81,7 @@ class Qwenvl_OFT(baseframework):
         self.past_action_window_size = config.framework.action_model.past_action_window_size
         self.chunk_len = self.past_action_window_size + 1 + self.future_action_window_size
         # self.hidden_dim = config.framework.action_model.action_hidden_dim
-        
+        self.memory_mode = config.framework.qwenvl.memory
         self.action_token = "🔍" # TODO also can add spacail token to Qwen, but too complex
         self.action_token_id = self.qwen_vl_interface.processor.tokenizer("🔍", add_special_tokens=False)["input_ids"][0]
 
@@ -115,6 +115,8 @@ class Qwenvl_OFT(baseframework):
         batch_images = [example["image"] for example in examples]  #  [B，[PLT]]
         instructions = [example["lang"] for example in examples]  # [B, str]
         actions = [example["action"] for example in examples]  # label [B， len, 7]
+        if self.memory_mode:
+            memorys = [example['memory'] for example in examples]
         
         # step 0: add special action token to instruction
         action_tokens = self.action_token* self.chunk_len #can't add " " between two tokens, otherwise will be tokenized to multiple tokens
@@ -122,7 +124,10 @@ class Qwenvl_OFT(baseframework):
         instructions = [instruction + prompt_suffix for instruction in instructions]
 
         # Step 1: QWenVL input format
-        qwen_inputs = self.qwen_vl_interface.build_qwenvl_inputs(images=batch_images, instructions=instructions)
+        if not self.memory_mode:
+            qwen_inputs = self.qwen_vl_interface.build_qwenvl_inputs(images=batch_images, instructions=instructions)
+        else:
+            qwen_inputs = self.qwen_vl_interface.build_qwenvl_inputs_with_memorys(images=batch_images, instructions=instructions, memorys=memorys)
         with torch.autocast("cuda", dtype=torch.bfloat16):
             qwenvl_outputs = self.qwen_vl_interface(
                 **qwen_inputs,
@@ -171,7 +176,8 @@ class Qwenvl_OFT(baseframework):
         
         batch_images = [to_pil_preserve(example["image"]) for example in examples]  #  [B，[PLT]]
         instructions = [example["lang"] for example in examples]  # [B, str]
-    
+        if self.memory_mode:
+            memorys = [example['memory'] for example in examples]
         train_obs_image_size = getattr(self.config.datasets.vla_data, "image_size", None)
         if train_obs_image_size:
             batch_images = resize_images(batch_images, target_size=train_obs_image_size)
@@ -182,7 +188,10 @@ class Qwenvl_OFT(baseframework):
         instructions = [instruction + prompt_suffix for instruction in instructions]
 
         # Step 1: QWenVL input format
-        qwen_inputs = self.qwen_vl_interface.build_qwenvl_inputs(images=batch_images, instructions=instructions)
+        if not self.memory_mode:
+            qwen_inputs = self.qwen_vl_interface.build_qwenvl_inputs(images=batch_images, instructions=instructions)
+        else:
+            qwen_inputs = self.qwen_vl_interface.build_qwenvl_inputs_with_memorys(images=batch_images, instructions=instructions, memorys=memorys)
         with torch.autocast("cuda", dtype=torch.bfloat16):
             qwenvl_outputs = self.qwen_vl_interface(
                 **qwen_inputs,
