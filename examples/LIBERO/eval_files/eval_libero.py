@@ -108,7 +108,6 @@ def eval_libero(args: Args) -> None:
         task_episodes, task_successes = 0, 0
         for episode_idx in tqdm.tqdm(range(args.num_trials_per_task)):
             logging.info(f"\nTask: {task_description}")
-
             # Reset environment
             client_model.reset(task_description=task_description)  # Reset the client connection
             env.reset()
@@ -120,6 +119,7 @@ def eval_libero(args: Args) -> None:
             t = 0
             replay_images = []
             full_actions = []
+            history_images = []
 
             logging.info(f"Starting episode {task_episodes + 1}...")
             step = 0
@@ -140,6 +140,9 @@ def eval_libero(args: Args) -> None:
                 wrist_img = np.ascontiguousarray(
                     obs["robot0_eye_in_hand_image"][::-1, ::-1]
                 )
+                history_images.append([img, wrist_img])   # memory_image[-1]是当前画面
+                reversed_history = history_images[::-1][::5] # 反转后正着采样
+                memory_images = reversed_history[:5][::-1]  # 限制数量，再反转
 
                 # Save preprocessed image for replay video
                 replay_images.append(img)
@@ -167,6 +170,7 @@ def eval_libero(args: Args) -> None:
                 example_dict = {
                     "image": [observation["observation.primary"][0], observation["observation.wrist_image"][0]],
                     "lang": observation["instruction"][0],
+                    "memory": memory_images if len(memory_images) < 6 else memory_images[:5]
                 }
 
                 
