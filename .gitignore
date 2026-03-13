@@ -1,0 +1,43 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Distribution / packaging
+*.egg-info/
+*.egg
+dist/
+build/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Training artifacts
+checkpoints/
+wandb/
+runs/
+*.pt
+*.pth
+*.bin
+*.safetensors
+
+# Data (large files)
+data/images/
+data/*.hdf5
+data/*.tfrecord
+*.jsonl
+
+# Jupyter
+.ipynb_checkpoints/
