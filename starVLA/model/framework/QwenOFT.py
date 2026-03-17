@@ -117,7 +117,7 @@ class Qwenvl_OFT(baseframework):
         actions = [example["action"] for example in examples]  # label [B， len, 7]
         if self.memory_mode:
             memorys = [example['memory'] for example in examples]
-        
+        steps = [example['step'] for example in examples]
         # step 0: add special action token to instruction
         action_tokens = self.action_token* self.chunk_len #can't add " " between two tokens, otherwise will be tokenized to multiple tokens
         prompt_suffix = f" Please predict the next {self.chunk_len} robot actions: <action>{action_tokens}<action>."
@@ -127,7 +127,7 @@ class Qwenvl_OFT(baseframework):
         if not self.memory_mode:
             qwen_inputs = self.qwen_vl_interface.build_qwenvl_inputs(images=batch_images, instructions=instructions)
         else:
-            qwen_inputs = self.qwen_vl_interface.build_qwenvl_inputs_with_memorys(images=batch_images, instructions=instructions, memorys=memorys)
+            qwen_inputs = self.qwen_vl_interface.build_qwenvl_inputs_with_memorys(images=batch_images, instructions=instructions, memorys=memorys, steps=steps)
         with torch.autocast("cuda", dtype=torch.bfloat16):
             qwenvl_outputs = self.qwen_vl_interface(
                 **qwen_inputs,

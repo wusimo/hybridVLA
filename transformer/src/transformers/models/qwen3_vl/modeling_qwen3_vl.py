@@ -1059,6 +1059,28 @@ class Qwen3VLModel(Qwen3VLPreTrainedModel):
                 The tensors corresponding to the input images.
             image_grid_thw (`torch.LongTensor` of shape `(num_images, 3)`, *optional*):
                 The temporal, height and width of feature shape of each image in LLM.
+        Returns:
+            - **image_embeds** (Tuple(torch.FloatTensor)`) — Tuple of `batch_size * num_views` 
+            image feature tensors, each of shape `(num_image_tokens, hidden_size)`.
+            
+            - **deepstack_image_embeds** (List(torch.FloatTensor)`) — Tuple of `batch_size * num_views` 
+            deepstack feature tensors, each of shape `(num_image_tokens, hidden_size)`.
+        """
+        pixel_values = pixel_values.type(self.visual.dtype)
+        image_embeds, deepstack_image_embeds = self.visual(pixel_values, grid_thw=image_grid_thw)
+        split_sizes = (image_grid_thw.prod(-1) // self.visual.spatial_merge_size**2).tolist()
+        image_embeds = torch.split(image_embeds, split_sizes)
+        return image_embeds, deepstack_image_embeds
+
+    def get_memory_features(self, pixel_values: torch.FloatTensor, image_grid_thw: Optional[torch.LongTensor] = None):
+        """
+        Encodes memory images into continuous embeddings that can be forwarded to the language model. The deepstack visual features are also returned.
+
+        Args:
+            pixel_values (`torch.FloatTensor` of shape `(batch_size, view_frame,num_channels, image_size, image_size)`):
+                The tensors corresponding to the input images.
+            image_grid_thw (`torch.LongTensor` of shape `(num_images, 3)`, *optional*):
+                The temporal, height and width of feature shape of each image in LLM.
         """
         pixel_values = pixel_values.type(self.visual.dtype)
         image_embeds, deepstack_image_embeds = self.visual(pixel_values, grid_thw=image_grid_thw)
@@ -1105,87 +1127,6 @@ class Qwen3VLModel(Qwen3VLPreTrainedModel):
             )
 
         return special_image_mask, special_video_mask
-
-    def encode_memory_images(
-        self,
-        pixel_values: List[List[List[Image.Image]]],  # [B][X_i][2] → PIL Image
-        image_grid_thw: torch.LongTensor,             # [B * 2, 3]
-        image_processor,                              # e.g., Qwen2VLImageProcessor
-    ) -> List[torch.Tensor]:
-        """
-        Encode variable-length multi-view memory images using Qwen3VLVisionModel.
-        
-        Args:
-            pixel_values: List of B samples.
-                          Each sample: List of X_i frames.
-                          Each frame: List of 2 PIL Images (left/right or view0/view1).
-            image_grid_thw: Tensor of shape [B * 2, 3]. 
-                            The first 2 rows for sample0, next 2 for sample1, etc.
-            image_processor: HuggingFace image processor to convert PIL → tensor.
-
-        Returns:
-            features_list: List of B tensors, each [X_i, 2, D]
-        """
-        B = len(pixel_values)
-        if B == 0:
-            return []
-
-        # Validate image_grid_thw shape
-        assert image_grid_thw.shape == (B * 2, 3), f"Expected [B*2, 3], got {image_grid_thw.shape}"
-
-        # Step 1: Flatten all PIL images and record mapping
-        all_pil_images: List[Image.Image] = []
-        frame_view_info: List[tuple] = []  # (sample_idx, frame_idx, view_idx)
-        frame_counts: List[int] = []       # X_i for each sample
-
-        for i, frames in enumerate(pixel_values):
-            X_i = len(frames)
-            frame_counts.append(X_i)
-            for t, views in enumerate(frames):
-                assert len(views) == 2, "Each frame must have exactly 2 views"
-                for v, img in enumerate(views):
-                    all_pil_images.append(img)
-                    frame_view_info.append((i, t, v))
-
-        N_total = len(all_pil_images)
-        if N_total == 0:
-            D = self.config.vision_config.out_hidden_size
-            return [torch.empty(X, 2, D, device=image_grid_thw.device) for X in frame_counts]
-
-        # Step 2: Preprocess all images at once
-        processed = image_processor(images=all_pil_images, return_tensors="pt")
-        pixel_values_tensor = processed["pixel_values"].to(image_grid_thw.device)  # [N_total, C, H, W]
-
-        # Step 3: Expand image_grid_thw to per-image level
-        # For sample i, its 2 grids are at [i*2 : i*2+2]
-        # We need to repeat them X_i times
-        expanded_grids = []
-        for i in range(B):
-            grids_for_sample = image_grid_thw[i * 2 : (i + 1) * 2]  # [2, 3]
-            X_i = frame_counts[i]
-            # Repeat each view's grid for all X_i frames
-            # Result: [X_i * 2, 3]
-            repeated = grids_for_sample.repeat_interleave(X_i, dim=0)  # [2*X_i, 3]
-            expanded_grids.append(repeated)
-
-        final_grid_thw = torch.cat(expanded_grids, dim=0)  # [N_total, 3]
-        assert final_grid_thw.shape == (N_total, 3)
-
-        # Step 4: Extract features using Qwen3VLVisionModel
-        # Note: Qwen3VLVisionModel expects (pixel_values, grid_thw)
-        features_flat = self.visual(pixel_values_tensor, grid_thw=final_grid_thw)  # [N_total, D]
-        D = features_flat.shape[-1]
-
-        # Step 5: Reconstruct per-sample structure
-        features_list = []
-        for X_i in frame_counts:
-            feat = torch.empty(X_i, 2, D, device=features_flat.device, dtype=features_flat.dtype)
-            features_list.append(feat)
-
-        for idx, (i, t, v) in enumerate(frame_view_info):
-            features_list[i][t, v] = features_flat[idx]
-
-        return features_list
 
     @auto_docstring
     @check_model_inputs
@@ -1307,13 +1248,55 @@ class Qwen3VLModel(Qwen3VLPreTrainedModel):
         if self.memory_mode == True:
             batch_size, _, _ = inputs_embeds.shape
             _, dim = deepstack_visual_embeds[0].shape
+            device = deepstack_visual_embeds[0].device
             # 将data中的memory部分拿出来
-            visual_memorys = kwargs['memorys'] # [batchsize,x,2,64,dim]
-            for i , _ in enumerate(deepstack_visual_embeds):
-                deepstack_visual_embeds[i] = deepstack_visual_embeds[i].view(batch_size, 2, -1, dim) # [Batchsize,2,64,dim]
-                for j , _ in enumerate(deepstack_visual_embeds[i]):
-                    deepstack_visual_embeds[i][j] = self.memory(visual_memorys[j], deepstack_visual_embeds[i][j], timestep=5)
-                deepstack_visual_embeds[i] = deepstack_visual_embeds[i].view(-1, dim)
+            visual_memorys = kwargs['memorys'] # [batchsize*memory_length*view*num_image_token*4,1536],num_image_token是patch_merged后的数量
+            memorys_length = kwargs['memorys_length']
+            steps = torch.tensor(kwargs['steps'], device=visual_memorys.device)
+            image_grid_thw_expanded = image_grid_thw.unsqueeze(1).expand(-1, memorys_length, -1).reshape(-1, 3)
+            memory_embeds, deepstack_memory_embeds = self.get_memory_features(visual_memorys, image_grid_thw_expanded)
+            # deepstack_memory_embeds维度：[batchsize*memory_length*view*num_image_token,2560]
+            # deepstack_visual_embeds维度：[batchsize*view*num_image_token,2560]
+
+            # ========== 2. 计算形状参数 ==========
+            total_mem_tokens = deepstack_memory_embeds[0].shape[0]
+            total_vis_tokens = deepstack_visual_embeds[0].shape[0]
+            
+            # 推断N：total = B * 5 * 2 * N_mem 或 B * 2 * N_vis
+            N_mem = total_mem_tokens // (batch_size * memorys_length * 2)
+            N_vis = total_vis_tokens // (batch_size * 2)
+            
+            # ========== 3. 直接构造tensor，避免多次stack ==========
+            # 预分配目标tensor，减少内存碎片
+            memory_tensor = torch.empty(batch_size, 3, memorys_length, 2, N_mem, dim, 
+                                        device=device, dtype=deepstack_memory_embeds[0].dtype)
+            visual_tensor = torch.empty(batch_size, 3, 2, N_vis, dim,
+                                        device=device, dtype=deepstack_visual_embeds[0].dtype)
+            
+            # 填充数据（in-place，避免临时tensor）
+            for level, (mem_feat, vis_feat) in enumerate(zip(deepstack_memory_embeds, deepstack_visual_embeds)):
+                # mem: [B*5*2*N_mem, D] -> [B, 5, 2, N_mem, D]
+                memory_tensor[:, level] = mem_feat.view(batch_size, memorys_length, 2, N_mem, dim)
+                # vis: [B*2*N_vis, D] -> [B, 2, N_vis, D]
+                visual_tensor[:, level] = vis_feat.view(batch_size, 2, N_vis, dim)
+            
+            # 立即释放原始特征
+            del deepstack_memory_embeds, deepstack_visual_embeds, visual_memorys
+            
+            # ========== 4. 记忆更新 ==========
+            visual_tensor = self.memory(memory_tensor, visual_tensor, steps)
+            # [B, 3, 2, N_vis, D]
+            
+            del memory_tensor  # 释放大历史tensor
+            
+            # ========== 5. 原地还原 ==========
+            # 直接生成tuple，避免list中间变量
+            deepstack_visual_embeds = tuple(
+                visual_tensor[:, i].contiguous().view(-1, dim)
+                for i in range(3)
+            )
+            
+            del visual_tensor
 
         outputs = self.language_model(
             input_ids=None,

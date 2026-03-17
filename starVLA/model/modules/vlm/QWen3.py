@@ -54,12 +54,14 @@ class _QWen3_VL_Interface(nn.Module):
         qwenvl_config = config.framework.get("qwenvl", {})
         model_id = qwenvl_config.get("base_vlm", "Qwen/Qwen3-VL-4B-Instruct")
         memory_mode = qwenvl_config.get('memory', False)
+        max_memory_step = qwenvl_config.get('max_memory_step', 5)
         model = Qwen3VLForConditionalGeneration.from_pretrained(
             model_id,
             attn_implementation="flash_attention_2",
             dtype=torch.bfloat16,
         )
         model.model.memory_mode = memory_mode
+        self.max_memory_step = max_memory_step
         processor = AutoProcessor.from_pretrained(model_id)
         processor.tokenizer.padding_side = "left"
 
@@ -212,86 +214,22 @@ class _QWen3_VL_Interface(nn.Module):
         )
 
         # --- Step 3: Process memory images into features ---
-        if memorys and any(memorys):  # check non-empty
-            # 检查这里的memorys格式，训练和测试的结果有什么不同
-            # Flatten all memory images and collect metadata
-            all_memory_images = []
-            frame_counts = []  # X_i for each sample
-            for mem in memorys:
-                X_i = len(mem)
-                frame_counts.append(X_i)
-                for frame in mem:
-                    assert len(frame) == 2, "Each memory frame must have exactly 2 views"
-                    all_memory_images.extend(frame)  # [view0, view1]
-            # Preprocess all memory images at once
-            if all_memory_images:
-                processed_mem = self.processor.image_processor(
-                    images=all_memory_images,
-                    return_tensors="pt"
-                )
-                pixel_values_mem = processed_mem["pixel_values"]
-                # Construct image_grid_thw for memory images
-                # For Qwen-VL, grid_thw can be inferred from image size, but we use processor's method
-                # Alternative: use the same logic as in processor to get grid_thw
-                # Since Qwen2VLImageProcessor doesn't return grid_thw directly, we compute it:
-                # But actually, in Qwen3-VL, grid_thw is computed from image size and config.
-                # We'll use a helper to generate it.
-                # Get grid_thw for each image
-                grid_thws = []
-                for img in all_memory_images:
-                    # Use the same logic as Qwen2VLImageProcessor to compute thw
-                    # This is a simplified version — ideally reuse internal method
-                    # w, h = img.size
-                    w, h = 224, 224
-                    # From Qwen-VL: patch_size=14, max_pixels=... but we use dynamic
-                    # Actually, the vision model expects grid_thw = [t, h_patches, w_patches]
-                    # Since t=1 for static images:
-                    patch_size = 14
-                    h_patches = h // patch_size
-                    w_patches = w // patch_size
-                    grid_thws.append([1, h_patches, w_patches])
-                image_grid_thw_mem = torch.tensor(grid_thws, dtype=torch.long)  # [N_total, 3]
-
-                # Move to same device as model (will be moved later, but safe)
-                pixel_values_mem = pixel_values_mem.to(self.model.device)
-                image_grid_thw_mem = image_grid_thw_mem.to(self.model.device)
-
-                # Extract features using self.model.visual
-                with torch.no_grad():  # or not, depending on training
-                    vision_output = self.model.visual(
-                        pixel_values_mem, grid_thw=image_grid_thw_mem
-                    )  # [N_total, D]
-                # Reconstruct per-sample structure: [B] -> each [X_i, 2, D]
-                # Handle different return types
-                if isinstance(vision_output, tuple):
-                    memory_features_flat = vision_output[0]  # usually the features
-                elif hasattr(vision_output, 'last_hidden_state'):
-                    memory_features_flat = vision_output.last_hidden_state
-                else:
-                    memory_features_flat = vision_output  # assume it's a tensor
-                D = memory_features_flat.shape[-1]
-                memory_features_list = []
-                idx = 0
-                for X_i in frame_counts:
-                    feat = memory_features_flat[idx : idx + X_i * 2 * 64]  # [X_i*2, D]
-                    feat = feat.view(X_i, 2, 64, D)  # [X_i, 2, D]
-                    memory_features_list.append(feat)
-                    idx += X_i * 2 * 64
-
-                batch_inputs['memorys'] = memory_features_list
-            else:
-                # No memory images
-                D = self.config.vision_config.out_hidden_size
-                batch_inputs['memorys'] = [
-                    torch.empty(0, 2, 64, D, device=self.model.device) for _ in memorys
-                ]
-        else:
-            # No memory provided
-            D = self.config.vision_config.out_hidden_size
-            batch_inputs['memorys'] = [
-                torch.empty(0, 2, 64, D, device=self.model.device) for _ in range(B)
-            ]
-
+        # 检查这里的memorys格式，训练和测试的结果有什么不同
+        # Flatten all memory images and collect metadata
+        all_memory_images = []
+        for mem in memorys:
+            for frame in mem:
+                # assert len(frame) == 2, "Each memory frame must have exactly 2 views"
+                all_memory_images.extend(frame)  # [view0, view1]
+        # Preprocess all memory images at once
+        processed_mem = self.processor.image_processor(
+            images=all_memory_images,
+            return_tensors="pt"
+        )
+        pixel_values_mem = processed_mem["pixel_values"]
+        batch_inputs['memorys'] = pixel_values_mem
+        batch_inputs['memorys_length'] = len(memorys[0])
+        batch_inputs['steps'] = kwargs['steps']
         # --- Step 4: Handle labels (unchanged) ---
         if solutions is not None:
             action_token_min = _ACTION_TOKEN_MIN

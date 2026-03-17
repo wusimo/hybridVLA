@@ -1531,7 +1531,8 @@ class LeRobotMixtureDataset(Dataset):
         self.seed = seed
         self.mode = mode
         self.data_cfg = kwargs["data_cfg"] if "data_cfg" in kwargs else None
-
+        self.max_step = kwargs['max_step'] if "max_step" in kwargs else 5
+        self.interval = kwargs['interval'] if "interval" in kwargs else 5
         # Set properties for sampling
 
         # 1. Dataset lengths
@@ -1678,7 +1679,6 @@ class LeRobotMixtureDataset(Dataset):
         """
         max_retries = 10
         last_exception = None
-        
         for attempt in range(max_retries):
             try:
                 while True: # @DUG
@@ -1691,14 +1691,18 @@ class LeRobotMixtureDataset(Dataset):
                 
                 # === 新增：构建稀疏历史记忆（最多5帧，间隔5步）===
                 memory_images = []  # 存储历史图像，按时间顺序：[t-25, t-20, ..., t-5]
-                max_memory_steps = 5      # 最多记5帧
-                interval = 5              # 每隔5步采一帧
-
+                num_views = len(dataset.modality_keys["video"])
                 # 从当前 step 往前回溯
-                for i in range(1, max_memory_steps + 1):
-                    hist_step = step - i * interval
+                for i in range(1, self.max_step + 1):
+                    hist_step = step - i * self.interval
                     if hist_step < 0:
-                        break  # 超出轨迹起点，停止
+                        # 超出轨迹起点，插入零图像
+                        zero_frame_views = [
+                            Image.new('RGB', (224, 224), color=(0, 0, 0)) 
+                            for _ in range(num_views)
+                        ]
+                        memory_images.append(zero_frame_views)
+                        continue
                     
                     try:
                         hist_raw = dataset.get_step_data(trajectory_id, hist_step)
@@ -1712,8 +1716,12 @@ class LeRobotMixtureDataset(Dataset):
                             hist_frame_views.append(img)
                         memory_images.append(hist_frame_views)  # 保存这一历史时刻的所有视角
                     except Exception:
-                        # 如果某历史步损坏，跳过（不中断）
-                        continue
+                        # 如果某历史步损坏，用零图像填充
+                        zero_frame_views = [
+                            Image.new('RGB', (224, 224), color=(0, 0, 0)) 
+                            for _ in range(num_views)
+                        ]
+                        memory_images.append(zero_frame_views)
 
                 raw_data = dataset.get_step_data(trajectory_id, step)    
                 data = dataset.transforms(raw_data)
@@ -1746,7 +1754,6 @@ class LeRobotMixtureDataset(Dataset):
                 state = np.concatenate(state, axis=1).astype(np.float16)
                 
                 state = None
-
                 if self.data_cfg is not None and self.data_cfg.get("include_state", False) not in ["False", False]:
                     
                     state = []
@@ -1754,9 +1761,9 @@ class LeRobotMixtureDataset(Dataset):
                         state.append(data[state_key])
                     state = np.concatenate(state, axis=1).astype(np.float16)
                     # prim_images
-                    return dict(action=action, image=all_images, lang=language, state=state, memory=memory_images)
+                    return dict(action=action, image=all_images, lang=language, state=state, memory=memory_images, step=step)
 
-                return dict(action=action, image=all_images, lang=language, memory=memory_images)
+                return dict(action=action, image=all_images, lang=language, memory=memory_images, step=step)
                 
             except Exception as e:
                 last_exception = e
