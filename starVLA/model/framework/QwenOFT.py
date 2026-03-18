@@ -178,6 +178,7 @@ class Qwenvl_OFT(baseframework):
         instructions = [example["lang"] for example in examples]  # [B, str]
         if self.memory_mode:
             memorys = [example['memory'] for example in examples]
+        steps = [example['step'] for example in examples]
         train_obs_image_size = getattr(self.config.datasets.vla_data, "image_size", None)
         if train_obs_image_size:
             batch_images = resize_images(batch_images, target_size=train_obs_image_size)
@@ -191,7 +192,7 @@ class Qwenvl_OFT(baseframework):
         if not self.memory_mode:
             qwen_inputs = self.qwen_vl_interface.build_qwenvl_inputs(images=batch_images, instructions=instructions)
         else:
-            qwen_inputs = self.qwen_vl_interface.build_qwenvl_inputs_with_memorys(images=batch_images, instructions=instructions, memorys=memorys)
+            qwen_inputs = self.qwen_vl_interface.build_qwenvl_inputs_with_memorys(images=batch_images, instructions=instructions, memorys=memorys, steps=steps)
         with torch.autocast("cuda", dtype=torch.bfloat16):
             qwenvl_outputs = self.qwen_vl_interface(
                 **qwen_inputs,
