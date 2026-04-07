@@ -55,6 +55,8 @@ class _QWen3_VL_Interface(nn.Module):
         model_id = qwenvl_config.get("base_vlm", "Qwen/Qwen3-VL-4B-Instruct")
         memory_mode = qwenvl_config.get('memory', False)
         max_memory_step = qwenvl_config.get('max_memory_step', 5)
+        if memory_mode:
+            pass
         model = Qwen3VLForConditionalGeneration.from_pretrained(
             model_id,
             attn_implementation="flash_attention_2",

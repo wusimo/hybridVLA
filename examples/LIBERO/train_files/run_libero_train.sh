@@ -16,7 +16,7 @@ config_yaml=./examples/LIBERO/train_files/starvla_cotrain_libero.yaml
 libero_data_root=playground/libero
 data_mix=libero_all
 run_root_dir=./results/Checkpoints
-run_id=memory_qwen3oft
+run_id=memory_qwen3oft_10interval
 # === End of environment variable configuration ===
 ###########################################################################################
 

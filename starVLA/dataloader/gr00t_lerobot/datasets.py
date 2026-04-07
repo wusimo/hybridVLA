@@ -1531,8 +1531,8 @@ class LeRobotMixtureDataset(Dataset):
         self.seed = seed
         self.mode = mode
         self.data_cfg = kwargs["data_cfg"] if "data_cfg" in kwargs else None
-        self.max_step = kwargs['max_step'] if "max_step" in kwargs else 5
-        self.interval = kwargs['interval'] if "interval" in kwargs else 5
+        self.max_step = self.data_cfg['max_step'] if "max_step" in self.data_cfg else 5
+        self.interval = self.data_cfg['interval'] if "interval" in self.data_cfg else 5
         # Set properties for sampling
 
         # 1. Dataset lengths

@@ -56,6 +56,8 @@ class Args:
 
     max_memory: int = 5
 
+    interval: int = 10
+
 
 def eval_libero(args: Args) -> None:
     logging.info(f"Arguments: {json.dumps(dataclasses.asdict(args), indent=4)}")
@@ -144,8 +146,8 @@ def eval_libero(args: Args) -> None:
                     obs["robot0_eye_in_hand_image"][::-1, ::-1]
                 )
                 history_images.append([img, wrist_img])   # memory_image[-1]是当前画面
-                reversed_history = history_images[::-1][::5] # 反转后正着采样
-                memory_images = reversed_history[:5][::-1]  # 限制数量，再反转
+                reversed_history = history_images[::-1][::args.interval] # 反转后正着采样
+                memory_images = reversed_history[:args.max_memory][::-1]  # 限制数量，再反转
                 if len(memory_images) < args.max_memory:
                     needed_zero_images = args.max_memory - len(memory_images)
                     zero_imgs_list = [[ZERO_IMG,ZERO_IMG] for _ in range(needed_zero_images)]
