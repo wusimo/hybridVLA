@@ -8,41 +8,27 @@ is_debug: false
 
 
 framework:
-  name: QwenGR00T
+  name: QwenOFT
   qwenvl:
-    base_vlm: ./playground/Pretrained_models/Qwen2.5-VL-3B-Instruct-Action
+    base_vlm: Qwen/Qwen3-VL-4B-Instruct
     attn_implementation: flash_attention_2
-    vl_hidden_dim: 2048
+    vl_hidden_dim: 2560 # qwen3-vl-4b:2560,qwen2.5-vl-3b:2048
+    memory: True
+    max_memory_step: max_memory_step
   dino:
     dino_backbone: dinov2_vits14
   action_model:
-    action_model_type: DiT-B
-    action_hidden_dim: 1024     # TODO merge with hidden_size, in config v2
-    hidden_size: 1024     
-    add_pos_embed: True
-    max_seq_len: 1024
-    action_dim: 7
-    state_dim: 7
-    future_action_window_size: 7
-    action_horizon: 8 # need merge with future_action_window_size 
+    action_model_type: VLA-Adapter
+    hidden_dim: 2560 # qwen3-vl-4b:2560,qwen2.5-vl-3b:2048
+    action_dim: 7 # libero specific action dim
+    state_dim: 14 # no proprio for libero though
+    action_query_num: 64
+    use_pro_version: true  # use the pro version of MLPResNet
+    use_proprio: false # no proprio for libero
+    phase: Training
+    num_actions_chunk: 8 # ! libero specific action chunk 
+    future_action_window_size: 7 # ! not quite sure why this is num_actions_chunk -1
     past_action_window_size: 0
-    repeated_diffusion_steps: 8
-    noise_beta_alpha: 1.5
-    noise_beta_beta: 1.0
-    noise_s: 0.999
-    num_timestep_buckets: 1000
-    num_inference_timesteps: 4
-    num_target_vision_tokens: 32
-    diffusion_model_cfg:    # DiT Transformers 的参数
-      cross_attention_dim: 2048 # VLM 的 dim
-      dropout: 0.2
-      final_dropout: true
-      interleave_self_attention: true
-      norm_type: "ada_norm"
-      num_layers: 16
-      output_dim: 1024
-      positional_embeddings: null
-
   reduce_in_full_precision: true
 
 
@@ -57,15 +43,14 @@ datasets:
     max_pixels: 307200
     min_pixels: 784
     model_max_length: 2048
-    model_type: qwen2.5vl
+    model_type: qwen3vl
     per_device_batch_size: 4
 
   vla_data:
     dataset_py: lerobot_datasets
-    data_root_dir: playground/Datasets/LEROBOT_LIBERO_DATA
+    data_root_dir: playground/libero
     data_mix: libero_all # libero_goal
     action_type: delta_qpos
-    sequential_step_sampling: False
     CoT_prompt: "Your task is {instruction}. To identify the key objects for your task. Locate their bounding boxes in [x1,y1,x2,y2] format."
     CoT_answer: bbox
     default_image_resolution: [3, 224, 224]
@@ -73,6 +58,8 @@ datasets:
     load_all_data_for_training: true
     obs: ["image_0"]
     video_backend: torchvision_av
+    max_step: 5
+    interval: 10
 
 
 trainer:
@@ -98,6 +85,7 @@ trainer:
   logging_frequency: 10
   gradient_clipping: 1.0
   gradient_accumulation_steps: 1
+  # pretrained_checkpoint: pretrained_model/Qwen3-VL-OFT-LIBERO-4in1/checkpoints/steps_50000_pytorch_model.pt
 
   optimizer:
     name: AdamW

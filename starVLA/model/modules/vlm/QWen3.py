@@ -53,13 +53,17 @@ class _QWen3_VL_Interface(nn.Module):
 
         qwenvl_config = config.framework.get("qwenvl", {})
         model_id = qwenvl_config.get("base_vlm", "Qwen/Qwen3-VL-4B-Instruct")
-        attn_implementation = qwenvl_config.get("attn_implementation", "sdpa")
-
+        memory_mode = qwenvl_config.get('memory', False)
+        max_memory_step = qwenvl_config.get('max_memory_step', 5)
+        if memory_mode:
+            pass
         model = Qwen3VLForConditionalGeneration.from_pretrained(
             model_id,
-            attn_implementation=attn_implementation,
+            attn_implementation="flash_attention_2",
             dtype=torch.bfloat16,
         )
+        model.model.memory_mode = memory_mode
+        self.max_memory_step = max_memory_step
         processor = AutoProcessor.from_pretrained(model_id)
         processor.tokenizer.padding_side = "left"
 
@@ -166,6 +170,84 @@ class _QWen3_VL_Interface(nn.Module):
                     RuntimeWarning (f"action token are on in yout tokenizer, plz see starVLA/model/modules/vlm/tools/add_qwen_special_tokens/README.md.")
             
             labels[labels == self.processor.tokenizer.pad_token_id] = -100 ## mask out pad tokens as well
+            batch_inputs['labels'] = labels
+
+        return batch_inputs.to(self.model.device)
+
+    def build_qwenvl_inputs_with_memorys(
+        self,
+        images,
+        instructions,
+        memorys,  # List[List[List[Image.Image]]], [B][X_i][2]
+        solutions=None,
+        **kwargs
+    ):
+        """
+        Build model inputs from raw data.
+        Also preprocess memory images into visual features.
+        """
+        assert len(images) == len(instructions), "Images and instructions must have the same length"
+        B = len(images)
+
+        # --- Step 1: Build chat messages (unchanged) ---
+        messages = []
+        for imgs, instruction in zip(images, instructions):
+            content = [{"type": "image", "image": img} for img in imgs]
+            if "CoT_prompt" in self.config.datasets.vla_data:
+                CoT_prompt = self.config.datasets.vla_data.get("CoT_prompt", "")
+                prompt = CoT_prompt.replace("{instruction}", instruction)
+            else:
+                prompt = instruction
+            content.append({"type": "text", "text": prompt})
+            msg = [{"role": "user", "content": content}]
+            if solutions is not None:
+                solution = solutions[len(messages)]
+                msg.append({"role": "assistant", "content": [{"type": "text", "text": solution}]})
+            messages.append(msg)
+
+        # --- Step 2: Tokenize main inputs ---
+        batch_inputs = self.processor.apply_chat_template(
+            messages,
+            tokenize=True,
+            padding=True,
+            add_generation_prompt=True,
+            return_dict=True,
+            return_tensors="pt"
+        )
+
+        # --- Step 3: Process memory images into features ---
+        # 检查这里的memorys格式，训练和测试的结果有什么不同
+        # Flatten all memory images and collect metadata
+        all_memory_images = []
+        for mem in memorys:
+            for frame in mem:
+                # assert len(frame) == 2, "Each memory frame must have exactly 2 views"
+                all_memory_images.extend(frame)  # [view0, view1]
+        # Preprocess all memory images at once
+        processed_mem = self.processor.image_processor(
+            images=all_memory_images,
+            return_tensors="pt"
+        )
+        pixel_values_mem = processed_mem["pixel_values"]
+        batch_inputs['memorys'] = pixel_values_mem
+        batch_inputs['memorys_length'] = len(memorys[0])
+        batch_inputs['steps'] = kwargs['steps']
+        # --- Step 4: Handle labels (unchanged) ---
+        if solutions is not None:
+            action_token_min = _ACTION_TOKEN_MIN
+            action_token_max = _ACTION_TOKEN_MAX
+            labels = batch_inputs['input_ids'].clone()
+            for i in range(labels.size(0)):
+                seq = labels[i]
+                mask_seq = (seq >= action_token_min) & (seq <= action_token_max)
+                nonzero_indices = torch.nonzero(mask_seq, as_tuple=False)
+                if nonzero_indices.numel() > 0:
+                    first_action_index = nonzero_indices[0].item()
+                    seq[:first_action_index] = IGNORE_INDEX
+                else:
+                    seq[:] = IGNORE_INDEX
+                    RuntimeWarning("Action tokens not found in tokenizer.")
+            labels[labels == self.processor.tokenizer.pad_token_id] = -100
             batch_inputs['labels'] = labels
 
         return batch_inputs.to(self.model.device)
