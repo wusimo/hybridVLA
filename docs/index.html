@@ -7,348 +7,232 @@
   <meta name="description" content="Project page for spatial-temporal grounded Vision-Language-Action models." />
   <style>
     :root {
-      --bg: #0b1020;
-      --bg-soft: #f5f7fb;
       --text: #111827;
       --muted: #6b7280;
       --line: #e5e7eb;
-      --card: #ffffff;
-      --primary: #2563eb;
-      --primary-dark: #1d4ed8;
-      --shadow: 0 10px 30px rgba(15, 23, 42, 0.08);
-      --radius: 18px;
-      --radius-sm: 12px;
-      --max: 1120px;
+      --bg: #ffffff;
+      --soft: #f8fafc;
+      --accent: #111827;
+      --maxw: 980px;
     }
-    
-    * {
-      box-sizing: border-box;
-    }
-    
-    html {
-      scroll-behavior: smooth;
-    }
-    
+
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
     body {
       margin: 0;
+      background: var(--bg);
       color: var(--text);
-      background: #ffffff;
-      font-family: Inter, Arial, Helvetica, sans-serif;
+      font-family: Arial, Helvetica, sans-serif;
       line-height: 1.7;
     }
-    
-    a {
-      color: inherit;
-      text-decoration: none;
-    }
-    
+
+    a { color: inherit; text-decoration: none; }
+
     .container {
-      width: min(var(--max), 92%);
+      width: min(var(--maxw), 92%);
       margin: 0 auto;
     }
-    
-    .narrow {
-      width: min(860px, 92%);
-      margin: 0 auto;
-    }
-    
+
     .hero {
-      background: linear-gradient(180deg, #0b1020 0%, #111b3a 100%);
-      color: #fff;
-      padding: 76px 0 56px;
-    }
-    
-    .hero-inner {
+      padding: 72px 0 36px;
       text-align: center;
+      border-bottom: 1px solid var(--line);
     }
-    
+
     .venue {
-      font-size: 0.95rem;
-      opacity: 0.8;
-      margin-bottom: 12px;
-      letter-spacing: 0.04em;
-      text-transform: uppercase;
+      color: var(--muted);
+      font-size: 0.98rem;
+      margin-bottom: 10px;
     }
-    
-    .title {
-      margin: 0 auto 18px;
-      max-width: 980px;
+
+    h1 {
+      margin: 0 auto 16px;
+      max-width: 900px;
       font-size: 3rem;
       line-height: 1.15;
-      font-weight: 800;
-    }
-    
-    .subtitle {
-      max-width: 860px;
-      margin: 0 auto 20px;
-      font-size: 1.12rem;
-      opacity: 0.92;
-    }
-    
-    .authors {
-      display: flex;
-      justify-content: center;
-      gap: 10px;
-      flex-wrap: wrap;
-      font-size: 1rem;
-      opacity: 0.9;
-      margin-bottom: 28px;
-    }
-    
-    .links {
-      display: flex;
-      justify-content: center;
-      gap: 12px;
-      flex-wrap: wrap;
-    }
-    
-    .btn {
-      padding: 11px 18px;
-      border-radius: 999px;
-      border: 1px solid rgba(255,255,255,0.25);
-      color: #fff;
-      transition: 0.2s ease;
-    }
-    
-    .btn:hover {
-      transform: translateY(-1px);
-      background: rgba(255,255,255,0.08);
-    }
-    
-    .btn-primary {
-      background: #fff;
-      color: var(--primary-dark);
-      border-color: #fff;
-      font-weight: 600;
-    }
-    
-    .section {
-      padding: 64px 0;
-    }
-    
-    .section-alt {
-      background: var(--bg-soft);
-    }
-    
-    .section h2 {
-      font-size: 2rem;
-      margin: 0 0 18px;
-      text-align: center;
-    }
-    
-    .section-desc {
-      max-width: 780px;
-      margin: 0 auto 28px;
-      text-align: center;
-      color: var(--muted);
-    }
-    
-    .cards,
-    .grid,
-    .results-grid,
-    .video-grid {
-      display: grid;
-      gap: 22px;
-    }
-    
-    .cards.three {
-      grid-template-columns: repeat(3, 1fr);
-    }
-    
-    .cards.two,
-    .grid.two,
-    .results-grid {
-      grid-template-columns: repeat(2, 1fr);
-    }
-    
-    .card {
-      background: var(--card);
-      border: 1px solid var(--line);
-      border-radius: var(--radius);
-      box-shadow: var(--shadow);
-      padding: 24px;
-    }
-    
-    .card h3 {
-      margin-top: 0;
-      margin-bottom: 10px;
-      font-size: 1.12rem;
-    }
-    
-    .card-title {
       font-weight: 700;
+      letter-spacing: -0.02em;
+    }
+
+    .subtitle {
+      max-width: 820px;
+      margin: 0 auto 18px;
+      font-size: 1.1rem;
+      color: #374151;
+    }
+
+    .authors, .affiliations {
+      color: var(--muted);
+      font-size: 1rem;
+      text-align: center;
       margin-bottom: 8px;
     }
-    
-    .media-card {
-      background: var(--card);
+
+    .button-row {
+      display: flex;
+      justify-content: center;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin-top: 22px;
+    }
+
+    .button {
       border: 1px solid var(--line);
-      border-radius: var(--radius);
-      box-shadow: var(--shadow);
-      padding: 16px;
+      border-radius: 999px;
+      padding: 10px 16px;
+      font-size: 0.95rem;
+      background: #fff;
     }
-    
-    .media-card.large {
-      padding: 20px;
+
+    .button:hover {
+      background: var(--soft);
     }
-    
+
+    section {
+      padding: 42px 0;
+    }
+
+    h2 {
+      margin: 0 0 18px;
+      text-align: center;
+      font-size: 1.8rem;
+      font-weight: 700;
+    }
+
+    .lead {
+      max-width: 820px;
+      margin: 0 auto;
+      text-align: center;
+      color: #374151;
+    }
+
+    .highlights {
+      max-width: 860px;
+      margin: 0 auto;
+    }
+
+    .highlights ol {
+      padding-left: 22px;
+      margin: 0;
+    }
+
+    .figure {
+      margin: 24px auto 0;
+      max-width: 920px;
+      background: #fff;
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      overflow: hidden;
+    }
+
     .placeholder {
-      min-height: 280px;
-      border: 2px dashed #cbd5e1;
-      border-radius: var(--radius-sm);
+      min-height: 320px;
       display: flex;
       align-items: center;
       justify-content: center;
       flex-direction: column;
+      border: 2px dashed #cbd5e1;
+      margin: 18px;
+      border-radius: 12px;
       color: var(--muted);
-      background: #fafcff;
       text-align: center;
       padding: 24px;
+      background: var(--soft);
     }
-    
-    .placeholder span {
-      font-size: 1.1rem;
-      font-weight: 700;
-      color: #334155;
+
+    .placeholder strong {
+      color: #374151;
+      font-size: 1.05rem;
       margin-bottom: 8px;
     }
-    
-    .timeline {
-      margin-top: 30px;
-      display: grid;
-      gap: 18px;
+
+    .caption {
+      padding: 0 20px 18px;
+      font-size: 0.96rem;
+      color: var(--muted);
+      text-align: center;
     }
-    
-    .timeline-item {
+
+    .grid-2 {
       display: grid;
-      grid-template-columns: 72px 1fr;
-      gap: 18px;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 22px;
       align-items: start;
-      background: #fff;
+    }
+
+    .card {
       border: 1px solid var(--line);
-      border-radius: var(--radius);
-      padding: 20px;
-      box-shadow: var(--shadow);
+      border-radius: 16px;
+      padding: 22px;
+      background: #fff;
     }
-    
-    .timeline-index {
-      width: 52px;
-      height: 52px;
-      border-radius: 999px;
-      background: #dbeafe;
-      color: var(--primary-dark);
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      font-weight: 800;
-      font-size: 0.95rem;
+
+    .card h3 {
+      margin: 0 0 10px;
+      font-size: 1.08rem;
     }
-    
-    .timeline-content h3 {
-      margin: 0 0 8px;
-    }
-    
-    .table-card {
-      overflow-x: auto;
-    }
-    
-    table {
+
+    .results-table {
       width: 100%;
       border-collapse: collapse;
+      margin-top: 20px;
       font-size: 0.96rem;
     }
-    
-    th, td {
+
+    .results-table th,
+    .results-table td {
       border-bottom: 1px solid var(--line);
       padding: 12px 10px;
       text-align: left;
       vertical-align: top;
     }
-    
-    th {
-      background: #f8fafc;
+
+    .results-table th {
+      background: var(--soft);
       font-weight: 700;
     }
-    
+
     .video-grid {
+      display: grid;
       grid-template-columns: repeat(3, 1fr);
+      gap: 18px;
+      margin-top: 20px;
     }
-    
-    .video-placeholder {
-      min-height: 210px;
-      border-radius: var(--radius);
+
+    .video-slot {
+      min-height: 190px;
       border: 2px dashed #cbd5e1;
-      background: #fff;
+      border-radius: 14px;
       display: flex;
       align-items: center;
       justify-content: center;
       color: var(--muted);
-      font-weight: 600;
-      box-shadow: var(--shadow);
-    }
-    
-    .muted {
-      color: var(--muted);
-    }
-    
-    .center {
+      background: var(--soft);
       text-align: center;
+      padding: 16px;
     }
-    
-    .bibtex {
+
+    pre {
       background: #0f172a;
       color: #e5e7eb;
-      padding: 20px;
-      border-radius: var(--radius);
+      padding: 18px;
+      border-radius: 14px;
       overflow-x: auto;
-      font-size: 0.94rem;
+      font-size: 0.92rem;
     }
-    
-    .footer {
+
+    footer {
       border-top: 1px solid var(--line);
-      padding: 26px 0 40px;
-      background: #fff;
-    }
-    
-    .footer-inner {
+      padding: 28px 0 42px;
       text-align: center;
       color: var(--muted);
+      font-size: 0.95rem;
     }
-    
-    .footer a {
-      color: var(--primary-dark);
-    }
-    
-    @media (max-width: 900px) {
-      .cards.three,
-      .cards.two,
-      .grid.two,
-      .results-grid,
-      .video-grid {
-        grid-template-columns: 1fr;
-      }
-    
-      .title {
-        font-size: 2.2rem;
-      }
-    }
-    
-    @media (max-width: 640px) {
-      .hero {
-        padding: 62px 0 44px;
-      }
-    
-      .title {
-        font-size: 1.8rem;
-      }
-    
-      .section {
-        padding: 50px 0;
-      }
-    
-      .timeline-item {
-        grid-template-columns: 1fr;
-      }
+
+    @media (max-width: 800px) {
+      h1 { font-size: 2.1rem; }
+      .grid-2, .video-grid { grid-template-columns: 1fr; }
+      .placeholder { min-height: 220px; }
     }
   </style>
 </head>
@@ -361,12 +245,12 @@
         A progressive framework for bridging 3D perception, temporal memory,
         and physically grounded action generation in embodied AI.
       </p>
-      <!-- <div class="authors">
+      <div class="authors">
         Anthony Williams
       </div>
       <div class="affiliations">
         Legend Co., Ltd.
-      </div> -->
+      </div>
       <div class="button-row">
         <a class="button" href="https://github.com/wusimo/hybridVLA/tree/starVLA-jiangnan" target="_blank">Code</a>
         <a class="button" href="#tldr">TL;DR</a>
@@ -554,7 +438,7 @@
       <h2>Citation</h2>
       <pre><code>@misc{spatiotemporal_vla_2026,
   title  = {Towards Spatial-Temporal Grounded Vision-Language-Action Models},
-  author = {},
+  author = {Anthony Williams},
   year   = {2026},
   note   = {Project Page}
 }</code></pre>
