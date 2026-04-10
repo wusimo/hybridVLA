@@ -893,8 +893,9 @@ class Qwen3VLModel(Qwen3VLPreTrainedModel):
     config: Qwen3VLConfig
     _no_split_modules = ["Qwen3VLTextDecoderLayer", "Qwen3VLVisionBlock"]
 
-    def __init__(self, config, memory_mode=True):
+    def __init__(self, config, memory_mode=False):
         super().__init__(config)
+        print("myqwen3VL")
         self.visual = Qwen3VLVisionModel._from_config(config.vision_config)
         self.language_model = Qwen3VLTextModel._from_config(config.text_config)
         self.rope_deltas = None  # cache rope_deltas here
