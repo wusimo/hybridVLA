@@ -1,91 +1,336 @@
 <!doctype html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>StarVLA | GitHub Pages</title>
-  <link rel="stylesheet" href="./style.css">
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>StarVLA Research Project</title>
+  <meta name="description" content="A research project page for spatial-temporal Vision-Language-Action learning." />
+  <link rel="stylesheet" href="./style.css" />
 </head>
 <body>
   <header class="hero">
-    <div class="container">
-      <p class="eyebrow">GitHub Project Page</p>
-      <h1>StarVLA</h1>
+    <div class="container hero-inner">
+      <p class="venue">Project Page / Research Preview</p>
+      <h1 class="title">
+        Towards Spatial-Temporal Grounded Vision-Language-Action Models
+      </h1>
       <p class="subtitle">
-        A Lego-like codebase for Vision-Language-Action model development.
+        A three-stage research roadmap for bridging 3D perception, temporal memory,
+        and physically grounded action generation in VLA systems.
       </p>
-      <div class="actions">
-        <a class="btn primary" href="https://github.com/wusimo/hybridVLA/tree/starVLA-jiangnan" target="_blank">View Repository</a>
-        <a class="btn" href="https://github.com/wusimo/hybridVLA/blob/starVLA-jiangnan/README.md" target="_blank">Read README</a>
+
+      <div class="authors">
+        <span>Anthony Williams</span>
+        <span>·</span>
+        <span>Legend Co., Ltd.</span>
+      </div>
+
+      <div class="links">
+        <a class="btn btn-primary" href="https://github.com/wusimo/hybridVLA/tree/starVLA-jiangnan" target="_blank">Code</a>
+        <a class="btn" href="#abstract">Abstract</a>
+        <a class="btn" href="#method">Method</a>
+        <a class="btn" href="#experiments">Experiments</a>
+        <a class="btn" href="#roadmap">Roadmap</a>
       </div>
     </div>
   </header>
 
-  <main class="container">
-    <section class="card">
-      <h2>About</h2>
-      <p>
-        StarVLA is a modular and flexible codebase for developing
-        Vision-Language Models (VLM) into Vision-Language-Action (VLA) systems.
-        It emphasizes plug-and-play design, rapid prototyping, and independent debugging.
-      </p>
-    </section>
-
-    <section class="grid two">
-      <section class="card">
-        <h2>Highlights</h2>
-        <ul>
-          <li>Modular VLA development framework</li>
-          <li>Support for multiple Qwen-based VLA variants</li>
-          <li>Examples, deployment scripts, and assets included</li>
-          <li>Designed for fast experimentation and extension</li>
-        </ul>
-      </section>
-
-      <section class="card">
-        <h2>Quick Links</h2>
-        <ul class="link-list">
-          <li><a href="https://github.com/wusimo/hybridVLA/tree/starVLA-jiangnan/examples" target="_blank">Examples</a></li>
-          <li><a href="https://github.com/wusimo/hybridVLA/tree/starVLA-jiangnan/assets" target="_blank">Assets</a></li>
-          <li><a href="https://github.com/wusimo/hybridVLA/tree/starVLA-jiangnan/deployment" target="_blank">Deployment</a></li>
-          <li><a href="https://github.com/wusimo/hybridVLA/tree/starVLA-jiangnan/starVLA" target="_blank">Core Code</a></li>
-          <li><a href="https://github.com/wusimo/hybridVLA/blob/starVLA-jiangnan/LICENSE" target="_blank">License</a></li>
-        </ul>
-      </section>
-    </section>
-
-    <section class="card">
-      <h2>Supported Frameworks</h2>
-      <div class="tags">
-        <span>Qwen-FAST</span>
-        <span>Qwen-OFT</span>
-        <span>Qwen-PI</span>
-        <span>Qwen-GR00T</span>
+  <main>
+    <section class="section teaser">
+      <div class="container">
+        <div class="media-card large">
+          <div class="placeholder">
+            <span>Teaser Figure Placeholder</span>
+            <small>Replace with one key project figure / system overview image</small>
+          </div>
+        </div>
       </div>
     </section>
 
-    <section class="card">
-      <h2>Recent Updates</h2>
-      <ul>
-        <li>Support for Qwen3-VL 4B pretrained weights and integration updates</li>
-        <li>Complete real-robot development case with Franka examples</li>
-        <li>Support for Qwen3.5 backbone for VLA</li>
-        <li>Training efficiency report and training curves released</li>
-      </ul>
+    <section class="section" id="abstract">
+      <div class="container narrow">
+        <h2>Abstract</h2>
+        <p>
+          Vision-Language-Action (VLA) models have become a mainstream paradigm for embodied AI,
+          aiming to map visual observations and language instructions directly to robot actions.
+          Our work focuses on the VLM-to-VLA evolution route and identifies three major bottlenecks:
+          lack of intrinsic 3D geometry in 2D visual tokens, lack of temporal memory in reactive decision-making,
+          and the gap between high-level semantic reasoning and precise physical action.
+        </p>
+        <p>
+          To address these issues, we propose a three-layer progressive framework:
+          (1) a spatiotemporal memory module for long-horizon context retention,
+          (2) a spatially enhanced VLM backbone based on RynnBrain-8B,
+          and (3) explicit integration of 3D point/depth information into VLM training,
+          enabling semantic reasoning to be grounded in physical coordinates.
+        </p>
+      </div>
     </section>
 
-    <section class="card">
-      <h2>Citation / Project</h2>
-      <p>
-        For full project details, benchmarks, checkpoints, and examples,
-        please refer to the repository README and linked resources.
-      </p>
+    <section class="section section-alt">
+      <div class="container">
+        <h2>Project Motivation</h2>
+        <div class="cards three">
+          <article class="card">
+            <h3>Bottleneck 1</h3>
+            <p class="card-title">2D Perception Trap</p>
+            <p>
+              Standard visual tokens do not carry explicit 3D geometry, which harms precise spatial reasoning
+              in fine-grained manipulation.
+            </p>
+          </article>
+          <article class="card">
+            <h3>Bottleneck 2</h3>
+            <p class="card-title">Reactive Memory Failure</p>
+            <p>
+              Current VLA models are often frame-reactive and cannot maintain long-horizon task context
+              or track object state transitions.
+            </p>
+          </article>
+          <article class="card">
+            <h3>Bottleneck 3</h3>
+            <p class="card-title">Semantic-to-Physical Gap</p>
+            <p>
+              Strong language understanding does not automatically translate into millimeter-level
+              motion precision in 3D space.
+            </p>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <section class="section" id="method">
+      <div class="container">
+        <h2>Method Overview</h2>
+        <p class="section-desc">
+          We develop a three-stage progressive solution where each layer addresses one core bottleneck,
+          while the layers reinforce each other to build a unified spatial-temporal VLA framework.
+        </p>
+
+        <div class="media-card">
+          <div class="placeholder">
+            <span>Method Figure Placeholder</span>
+            <small>Suggested: 3-stage architecture diagram</small>
+          </div>
+        </div>
+
+        <div class="timeline">
+          <div class="timeline-item">
+            <div class="timeline-index">01</div>
+            <div class="timeline-content">
+              <h3>Spatiotemporal Memory Module</h3>
+              <p>
+                Introduce explicit historical context aggregation into the visual encoder,
+                allowing the model to remember object trajectories, prior interactions,
+                and long-horizon execution states.
+              </p>
+            </div>
+          </div>
+
+          <div class="timeline-item">
+            <div class="timeline-index">02</div>
+            <div class="timeline-content">
+              <h3>Spatially Enhanced VLM Backbone</h3>
+              <p>
+                Replace the generic backbone with RynnBrain-8B to inject stronger spatial reasoning,
+                object localization, and coordinate-aware understanding into the base model.
+              </p>
+            </div>
+          </div>
+
+          <div class="timeline-item">
+            <div class="timeline-index">03</div>
+            <div class="timeline-content">
+              <h3>3D Grounded Training Data</h3>
+              <p>
+                Integrate point cloud or depth-aligned 3D information into training so that the model
+                learns to reason directly in physical coordinates instead of relying only on implicit action translation.
+              </p>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="section section-alt">
+      <div class="container">
+        <h2>Why This Design</h2>
+        <div class="grid two">
+          <div class="card">
+            <h3>Engineering Platform</h3>
+            <p>
+              We build on StarVLA, a modular Lego-like VLA framework that supports backbone replacement,
+              custom modules, unified data pipelines, and controlled ablation experiments.
+            </p>
+          </div>
+          <div class="card">
+            <h3>Controlled Comparison</h3>
+            <p>
+              The framework makes it easy to compare Qwen3-VL, Qwen3-VL + memory,
+              RynnBrain-8B, and RynnBrain-8B + memory under the same training and evaluation pipeline.
+            </p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="section" id="experiments">
+      <div class="container">
+        <h2>Current Progress</h2>
+        <div class="cards two">
+          <article class="card">
+            <h3>Qwen3-VL + Memory Module</h3>
+            <p>
+              Initial evaluation has been completed to isolate and verify the benefit of temporal memory
+              for long-horizon task execution.
+            </p>
+          </article>
+          <article class="card">
+            <h3>RynnBrain-8B Integration</h3>
+            <p>
+              Integration into the StarVLA framework is already running end-to-end.
+              Full training and complete evaluation are the next steps.
+            </p>
+          </article>
+        </div>
+
+        <div class="results-grid">
+          <div class="media-card">
+            <div class="placeholder">
+              <span>Result Figure Placeholder A</span>
+              <small>Training curve / benchmark plot</small>
+            </div>
+          </div>
+          <div class="media-card">
+            <div class="placeholder">
+              <span>Result Figure Placeholder B</span>
+              <small>Qualitative comparison / rollout visualization</small>
+            </div>
+          </div>
+        </div>
+
+        <div class="card table-card">
+          <h3>Evaluation Focus</h3>
+          <table>
+            <thead>
+              <tr>
+                <th>Benchmark</th>
+                <th>Capability</th>
+                <th>Main Target</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>LIBERO-Spatial</td>
+                <td>Spatial relation understanding</td>
+                <td>3D perception bottleneck</td>
+              </tr>
+              <tr>
+                <td>LIBERO-Object</td>
+                <td>Object property interaction</td>
+                <td>Semantic-to-physical grounding</td>
+              </tr>
+              <tr>
+                <td>LIBERO-Goal</td>
+                <td>Goal-directed planning</td>
+                <td>Memory + grounding</td>
+              </tr>
+              <tr>
+                <td>LIBERO-Long</td>
+                <td>Long-horizon execution</td>
+                <td>Temporal memory bottleneck</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <section class="section section-alt">
+      <div class="container">
+        <h2>Video</h2>
+        <div class="video-grid">
+          <div class="video-placeholder">Demo Video Placeholder 1</div>
+          <div class="video-placeholder">Demo Video Placeholder 2</div>
+          <div class="video-placeholder">Demo Video Placeholder 3</div>
+        </div>
+        <p class="muted center">
+          Replace each block with embedded YouTube / Bilibili / MP4 demo clips.
+        </p>
+      </div>
+    </section>
+
+    <section class="section" id="roadmap">
+      <div class="container">
+        <h2>Research Roadmap</h2>
+        <div class="media-card">
+          <div class="placeholder">
+            <span>Roadmap Figure Placeholder</span>
+            <small>Suggested: the 3-stage technical roadmap figure</small>
+          </div>
+        </div>
+
+        <div class="cards three">
+          <article class="card">
+            <h3>Stage I</h3>
+            <p>Qwen3-VL + spatiotemporal memory to validate temporal-context modeling.</p>
+          </article>
+          <article class="card">
+            <h3>Stage II</h3>
+            <p>RynnBrain-8B + memory to verify the spatial × temporal synergy.</p>
+          </article>
+          <article class="card">
+            <h3>Stage III</h3>
+            <p>3D data integrated into VLM training to bridge semantics and physical coordinates.</p>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <section class="section section-alt">
+      <div class="container">
+        <h2>Related Work Positioning</h2>
+        <div class="card table-card">
+          <table>
+            <thead>
+              <tr>
+                <th>Work</th>
+                <th>3D Perception</th>
+                <th>Temporal Memory</th>
+                <th>Grounding</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr><td>GST-VLA</td><td>Strong</td><td>Weak</td><td>Medium</td></tr>
+              <tr><td>3D-VLA</td><td>Medium</td><td>Medium</td><td>Medium</td></tr>
+              <tr><td>CoT-VLA</td><td>Weak</td><td>Strong (future-oriented)</td><td>Weak</td></tr>
+              <tr><td>SpatialCoT</td><td>Weak</td><td>Weak</td><td>Strong</td></tr>
+              <tr><td>Our Framework</td><td>Strong</td><td>Strong</td><td>In Progress</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <section class="section">
+      <div class="container narrow">
+        <h2>BibTeX</h2>
+        <pre class="bibtex"><code>@misc{starvla_project,
+  title  = {Towards Spatial-Temporal Grounded Vision-Language-Action Models},
+  author = {Anthony Williams},
+  year   = {2026},
+  note   = {Project page}
+}</code></pre>
+      </div>
     </section>
   </main>
 
   <footer class="footer">
-    <div class="container">
-      <p>© StarVLA Project · Hosted with GitHub Pages</p>
+    <div class="container footer-inner">
+      <p>Built for GitHub Pages · Project page template for AI paper-style repository presentation.</p>
+      <p>
+        <a href="https://github.com/wusimo/hybridVLA/tree/starVLA-jiangnan" target="_blank">GitHub Repository</a>
+      </p>
     </div>
   </footer>
 </body>
