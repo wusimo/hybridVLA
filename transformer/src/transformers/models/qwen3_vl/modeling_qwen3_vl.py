@@ -1354,9 +1354,9 @@ class Qwen3VLForConditionalGeneration(Qwen3VLPreTrainedModel, GenerationMixin):
     accepts_loss_kwargs = False
     config: Qwen3VLConfig
 
-    def __init__(self, config):
+    def __init__(self, config, memory_mode=False):
         super().__init__(config)
-        self.model = Qwen3VLModel(config)
+        self.model = Qwen3VLModel(config, memory_mode=memory_mode)
         self.lm_head = nn.Linear(config.text_config.hidden_size, config.text_config.vocab_size, bias=False)
 
         self.post_init()

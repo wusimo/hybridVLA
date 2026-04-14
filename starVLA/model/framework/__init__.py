@@ -55,8 +55,8 @@ def build_framework(cfg):
         from starVLA.model.framework.NeuroVLA import NeuroVLA
         return NeuroVLA(cfg)
     elif cfg.framework.name == "RynnBrainOFT":
-        from starVLA.model.framework.NeuroVLA import NeuroVLA
-        return NeuroVLA(cfg)
+        from starVLA.model.framework.RynnBrainOFT import RynnBrain_OFT
+        return RynnBrain_OFT(cfg)
     
 
     # auto detect from registry

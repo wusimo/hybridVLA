@@ -1368,9 +1368,9 @@ class LeRobotSingleDataset(Dataset):
         trajectory_id, base_index = self.all_steps[index]
         raw_data = self.get_step_data(trajectory_id, base_index)
         data = self.transforms(raw_data)
-        return self._pack_sample(data)
+        return self._pack_sample(data, trajectory_id=trajectory_id, base_index=base_index)
 
-    def _pack_sample(self, data: dict) -> dict:
+    def _pack_sample(self, data: dict, trajectory_id: int = None, base_index: int = None) -> dict:
         """Pack transformed modality data into training sample format."""
         prim_images = []
         wrist_views = []
@@ -1402,6 +1402,23 @@ class LeRobotSingleDataset(Dataset):
                 state.append(data[state_key])
             state = np.concatenate(state, axis=1).astype(np.float16)
             sample["state"] = state
+
+        # Memory frames: collect past observations at fixed intervals
+        # memory shape: [max_step][num_views], oldest frame first (ShortTermMemoryBank reads last as most recent)
+        if (self.data_cfg is not None and self.data_cfg.get("memory", False)
+                and trajectory_id is not None and base_index is not None):
+            max_step = int(self.data_cfg.get("max_step", 5))
+            interval = int(self.data_cfg.get("interval", 10))
+            memory = []
+            for i in range(max_step, 0, -1):   # oldest → newest
+                mem_index = max(0, base_index - i * interval)
+                frame_views = []
+                for video_key in self.modality_keys["video"]:
+                    frames = self.get_video(trajectory_id, video_key, mem_index)
+                    frame_views.append(Image.fromarray(frames[0]).resize((224, 224)))
+                memory.append(frame_views)   # [num_views=2]
+            sample["memory"] = memory        # [max_step][num_views]
+            sample["step"] = base_index
 
         return sample
 
@@ -2316,9 +2333,9 @@ class LeRobotMixtureDataset(Dataset):
                         break
                     index = random.randint(0, len(self) - 1)
                     
-                raw_data = dataset.get_step_data(trajectory_id, step)    
+                raw_data = dataset.get_step_data(trajectory_id, step)
                 data = dataset.transforms(raw_data)
-                sample = dataset._pack_sample(data)
+                sample = dataset._pack_sample(data, trajectory_id=trajectory_id, base_index=step)
                 sample["robot_tag"] = dataset.tag
                 return sample
                 

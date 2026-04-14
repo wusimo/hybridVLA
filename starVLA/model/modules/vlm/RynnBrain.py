@@ -1,7 +1,8 @@
 import torch
 import torch.nn as nn
 from typing import Optional
-from transformers import AutoProcessor, AutoModelForImageTextToText
+from transformers import AutoProcessor
+from transformers import Qwen3VLForConditionalGeneration
 from transformers.modeling_outputs import CausalLMOutputWithPast
 
 from accelerate.logging import get_logger
@@ -9,6 +10,11 @@ from accelerate.logging import get_logger
 logger = get_logger(__name__)
 
 IGNORE_INDEX = -100
+
+# Action token range — same as QWen3.py (RynnBrain is Qwen3-VL based).
+# Only meaningful when using a Fast/Action tokenizer variant.
+_ACTION_TOKEN_MIN = 151669
+_ACTION_TOKEN_MAX = 153716
 
 class _RynnBrain_Interface(nn.Module):
     """
@@ -21,19 +27,25 @@ class _RynnBrain_Interface(nn.Module):
 
         rb_cfg = config.framework.get("qwenvl", {}) if config is not None else {}
         model_id = rb_cfg.get("base_vlm", "Alibaba-DAMO-Academy/RynnBrain-8B")
+        memory_mode = rb_cfg.get('memory', False)
+        max_memory_step = rb_cfg.get('max_memory_step', 5)
+        if memory_mode:
+            pass
+
         # also can be:
         #  - Alibaba-DAMO-Academy/RynnBrain-2B
         #  - Alibaba-DAMO-Academy/RynnBrain-30B-A3B
         #  - Alibaba-DAMO-Academy/RynnBrain-Plan-8B / Nav-8B / CoP-8B ...
 
-        # NOTE: RynnBrain HF is tagged with custom_code, so trust_remote_code is usually needed.
-        self.model = AutoModelForImageTextToText.from_pretrained(
+        # RynnBrain checkpoint is qwen3_vl architecture — load via Qwen3VLForConditionalGeneration
+        # so the local transformer (with ShortTermMemoryBank) is used directly.
+        self.model = Qwen3VLForConditionalGeneration.from_pretrained(
             model_id,
             torch_dtype=torch.bfloat16,
             attn_implementation="flash_attention_2",
-            trust_remote_code=True
+            memory_mode=memory_mode,
         )
-
+        self.max_memory_step = max_memory_step
         self.processor = AutoProcessor.from_pretrained(
             model_id,
             trust_remote_code=True,
@@ -43,16 +55,14 @@ class _RynnBrain_Interface(nn.Module):
         self.config = config
         self.model_id = model_id
 
-        # keep alignment trick you used (safe no-op if attr missing)
+        # Align hidden_size (safe no-op if attr missing)
         if hasattr(self.model.config, "text_config") and hasattr(self.model.config.text_config, "hidden_size"):
             self.model.config.hidden_size = self.model.config.text_config.hidden_size
 
-        print("model class:", type(self.model))
-        print("model module:", type(self.model).__module__)
-        print("model name:", type(self.model).__name__)
-        import inspect
-
-        print(inspect.getfile(type(self.model)))
+        # Only bind action token range when using a Fast/Action tokenizer variant
+        if "-Action" in model_id:
+            self._ACTION_TOKEN_MIN = _ACTION_TOKEN_MIN
+            self._ACTION_TOKEN_MAX = _ACTION_TOKEN_MAX
 
         
 
@@ -115,6 +125,84 @@ class _RynnBrain_Interface(nn.Module):
             batch_inputs["labels"] = labels
 
         return batch_inputs.to(self.model.device)
+
+    def build_rynnbrain_inputs_with_memorys(
+            self,
+            images,
+            instructions,
+            memorys,  # List[List[List[Image.Image]]], [B][X_i][2]
+            solutions=None,
+            **kwargs
+        ):
+        """
+        Build model inputs from raw data.
+        Also preprocess memory images into visual features.
+        """
+        assert len(images) == len(instructions), "Images and instructions must have the same length"
+        B = len(images)
+
+        # --- Step 1: Build chat messages (unchanged) ---
+        messages = []
+        for imgs, instruction in zip(images, instructions):
+            content = [{"type": "image", "image": img} for img in imgs]
+            if "CoT_prompt" in self.config.datasets.vla_data:
+                CoT_prompt = self.config.datasets.vla_data.get("CoT_prompt", "")
+                prompt = CoT_prompt.replace("{instruction}", instruction)
+            else:
+                prompt = instruction
+            content.append({"type": "text", "text": prompt})
+            msg = [{"role": "user", "content": content}]
+            if solutions is not None:
+                solution = solutions[len(messages)]
+                msg.append({"role": "assistant", "content": [{"type": "text", "text": solution}]})
+            messages.append(msg)
+
+        # --- Step 2: Tokenize main inputs ---
+        batch_inputs = self.processor.apply_chat_template(
+            messages,
+            tokenize=True,
+            padding=True,
+            add_generation_prompt=True,
+            return_dict=True,
+            return_tensors="pt"
+        )
+
+        # --- Step 3: Process memory images into features ---
+        # 检查这里的memorys格式，训练和测试的结果有什么不同
+        # Flatten all memory images and collect metadata
+        all_memory_images = []
+        for mem in memorys:
+            for frame in mem:
+                # assert len(frame) == 2, "Each memory frame must have exactly 2 views"
+                all_memory_images.extend(frame)  # [view0, view1]
+        # Preprocess all memory images at once
+        processed_mem = self.processor.image_processor(
+            images=all_memory_images,
+            return_tensors="pt"
+        )
+        pixel_values_mem = processed_mem["pixel_values"]
+        batch_inputs['memorys'] = pixel_values_mem
+        batch_inputs['memorys_length'] = len(memorys[0])
+        batch_inputs['steps'] = kwargs['steps']
+        # --- Step 4: Handle labels (unchanged) ---
+        if solutions is not None:
+            action_token_min = _ACTION_TOKEN_MIN
+            action_token_max = _ACTION_TOKEN_MAX
+            labels = batch_inputs['input_ids'].clone()
+            for i in range(labels.size(0)):
+                seq = labels[i]
+                mask_seq = (seq >= action_token_min) & (seq <= action_token_max)
+                nonzero_indices = torch.nonzero(mask_seq, as_tuple=False)
+                if nonzero_indices.numel() > 0:
+                    first_action_index = nonzero_indices[0].item()
+                    seq[:first_action_index] = IGNORE_INDEX
+                else:
+                    seq[:] = IGNORE_INDEX
+                    RuntimeWarning("Action tokens not found in tokenizer.")
+            labels[labels == self.processor.tokenizer.pad_token_id] = -100
+            batch_inputs['labels'] = labels
+
+        return batch_inputs.to(self.model.device)    
 
 if __name__ == "__main__":
     from omegaconf import OmegaConf

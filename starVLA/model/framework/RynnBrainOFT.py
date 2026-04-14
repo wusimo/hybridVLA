@@ -57,6 +57,9 @@ class RynnBrain_OFT(baseframework):
             )
         self.action_token_id = ids[0]
 
+        # --- 4) Memory mode ---
+        self.memory_mode = config.framework.qwenvl.memory
+
         self.l1_loss = nn.L1Loss()
 
     def forward(self, examples: List[dict] = None, **kwargs) -> Tuple:
@@ -70,6 +73,9 @@ class RynnBrain_OFT(baseframework):
         batch_images = [ex["image"] for ex in examples]          # [B, [PIL,...]]
         instructions = [ex["lang"] for ex in examples]          # [B]
         actions = [ex["action"] for ex in examples]             # [B, T, A]
+        if self.memory_mode:
+            memorys = [ex["memory"] for ex in examples]
+        steps = [ex["step"] for ex in examples]
 
         # step 0: append action placeholders
         action_tokens = self.action_token * self.chunk_len
@@ -77,9 +83,14 @@ class RynnBrain_OFT(baseframework):
         instructions = [ins + prompt_suffix for ins in instructions]
 
         # step 1: build inputs
-        rb_inputs = self.vlm_interface.build_rynnbrain_inputs(
-            images=batch_images, instructions=instructions
-        )
+        if not self.memory_mode:
+            rb_inputs = self.vlm_interface.build_rynnbrain_inputs(
+                images=batch_images, instructions=instructions
+            )
+        else:
+            rb_inputs = self.vlm_interface.build_rynnbrain_inputs_with_memorys(
+                images=batch_images, instructions=instructions, memorys=memorys, steps=steps
+            )
 
         # step 2: run backbone
         with torch.autocast("cuda", dtype=torch.bfloat16):
@@ -114,6 +125,9 @@ class RynnBrain_OFT(baseframework):
         """
         batch_images = [to_pil_preserve(ex["image"]) for ex in examples]
         instructions = [ex["lang"] for ex in examples]
+        if self.memory_mode:
+            memorys = [ex["memory"] for ex in examples]
+        steps = [ex["step"] for ex in examples]
 
         train_obs_image_size = getattr(self.config.datasets.vla_data, "image_size", None)
         if train_obs_image_size:
@@ -123,9 +137,14 @@ class RynnBrain_OFT(baseframework):
         prompt_suffix = f" Please predict the next {self.chunk_len} robot actions: <action>{action_tokens}<action>."
         instructions = [ins + prompt_suffix for ins in instructions]
 
-        rb_inputs = self.vlm_interface.build_rynnbrain_inputs(
-            images=batch_images, instructions=instructions
-        )
+        if not self.memory_mode:
+            rb_inputs = self.vlm_interface.build_rynnbrain_inputs(
+                images=batch_images, instructions=instructions
+            )
+        else:
+            rb_inputs = self.vlm_interface.build_rynnbrain_inputs_with_memorys(
+                images=batch_images, instructions=instructions, memorys=memorys, steps=steps
+            )
 
         with torch.autocast("cuda", dtype=torch.bfloat16):
             outputs = self.vlm_interface(
