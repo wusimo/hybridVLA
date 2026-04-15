@@ -120,6 +120,8 @@ def eval_libero(args: Args) -> None:
             t = 0
             replay_images = []
             full_actions = []
+            ZERO_IMG = np.zeros((256, 256, 3), dtype=np.uint8)
+            history_images = []
 
             logging.info(f"Starting episode {task_episodes + 1}...")
             step = 0
@@ -140,7 +142,13 @@ def eval_libero(args: Args) -> None:
                 wrist_img = np.ascontiguousarray(
                     obs["robot0_eye_in_hand_image"][::-1, ::-1]
                 )
-
+                history_images.append([img, wrist_img])   # memory_image[-1]是当前画面
+                reversed_history = history_images[::-1][::args.interval] # 反转后正着采样
+                memory_images = reversed_history[:args.max_memory][::-1]  # 限制数量，再反转
+                if len(memory_images) < args.max_memory:
+                    needed_zero_images = args.max_memory - len(memory_images)
+                    zero_imgs_list = [[ZERO_IMG,ZERO_IMG] for _ in range(needed_zero_images)]
+                    memory_images = zero_imgs_list + memory_images
                 # Save preprocessed image for replay video
                 replay_images.append(img)
 
@@ -167,6 +175,8 @@ def eval_libero(args: Args) -> None:
                 example_dict = {
                     "image": [observation["observation.primary"][0], observation["observation.wrist_image"][0]],
                     "lang": observation["instruction"][0],
+                    "memory": memory_images,
+                    "step" : t
                 }
 
                 

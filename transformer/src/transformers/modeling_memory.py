@@ -55,10 +55,10 @@ class MemorySlotAttention(nn.Module):
 class ShortTermMemoryBank(nn.Module):
     """
     Short-term memory for multi-level (3 levels) dual-view features with batch dimension.
-    固定时间步 T=5，3个层级独立处理，支持 batch 中不同 timestep。
+    预设时间步 T=5，3个层级独立处理，支持 batch 中不同 timestep。
     
     Input:
-        - memory: [B, 3, 5, 2, 64, D]，3个层级，每层级5步历史，双视角
+        - memory: [B, 3, T, 2, 64, D]，3个层级，每层级T步历史，双视角
         - visual: [B, 3, 2, 64, D]，3个层级，当前帧，双视角
         - timestep: [B] 或 int，每个样本的绝对时间步
         
@@ -123,14 +123,14 @@ class ShortTermMemoryBank(nn.Module):
     
     def forward(
         self,
-        memory: torch.Tensor,           # [B, 3, 5, 2, 64, D]
+        memory: torch.Tensor,           # [B, 3, T, 2, 64, D]
         visual: torch.Tensor,           # [B, 3, 2, 64, D]
         timestep: torch.Tensor,         # [B] 或 int，每个样本的时间步
     ) -> torch.Tensor:
         """
         更新记忆，3个层级分别处理，支持 batch 中不同 timestep。
         """
-        assert memory.dim() == 6, f"memory must be [B,3,5,2,64,D], got {memory.shape}"
+        assert memory.dim() == 6, f"memory must be [B,3,T,2,64,D], got {memory.shape}"
         assert visual.dim() == 5, f"visual must be [B,3,2,64,D], got {visual.shape}"
         B, L, T, V, S, D = memory.shape
         assert L == self.num_levels
@@ -153,7 +153,7 @@ class ShortTermMemoryBank(nn.Module):
         # 处理每个层级
         new_memories = []
         for level in range(self.num_levels):
-            level_memory = memory[:, level, :, :, :, :]   # [B, 5, 2, 64, D]
+            level_memory = memory[:, level, :, :, :, :]   # [B, T, 2, 64, D]
             level_visual = visual[:, level, :, :, :]       # [B, 2, 64, D]
             
             # 添加时间编码: [B, D] -> [B, 1, 1, D]
@@ -186,12 +186,12 @@ class ShortTermMemoryBank(nn.Module):
 def demo():
     B, D = 4, 2560  # batch=4
     num_slots = 64
-    
+    T = 10
     device = torch.device('cpu')
-    memory_bank = ShortTermMemoryBank(dim=D, num_slots=num_slots).to(device)
+    memory_bank = ShortTermMemoryBank(dim=D, num_slots=num_slots,num_timesteps=T).to(device)
     
     # 输入
-    memory = torch.randn(B, 3, 5, 2, num_slots, D).to(device)
+    memory = torch.randn(B, 3, T, 2, num_slots, D).to(device)
     visual = torch.randn(B, 3, 2, num_slots, D).to(device)
     
     # 情况1: 所有样本相同 timestep (int)

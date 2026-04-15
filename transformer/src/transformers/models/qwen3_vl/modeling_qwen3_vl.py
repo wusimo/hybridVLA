@@ -901,7 +901,8 @@ class Qwen3VLModel(Qwen3VLPreTrainedModel):
         self.rope_deltas = None  # cache rope_deltas here
         self.memory_mode = memory_mode
         if self.memory_mode:
-            self.memory = ShortTermMemoryBank(dim=config.vision_config.out_hidden_size)
+            self.memory = ShortTermMemoryBank(dim=config.vision_config.out_hidden_size,
+                                              num_timesteps=5)
         # Initialize weights and apply final processing
         self.post_init()
 
