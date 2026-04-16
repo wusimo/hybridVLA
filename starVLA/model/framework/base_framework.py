@@ -96,7 +96,8 @@ class baseframework(PreTrainedModel):
 
             model_state_dict = load_file(str(pretrained_checkpoint))
         else:
-            model_state_dict = torch.load(pretrained_checkpoint, map_location="cpu")
+            # model_state_dict = torch.load(pretrained_checkpoint, map_location="cpu")
+            model_state_dict = torch.load(pretrained_checkpoint, map_location="cpu", weights_only=False)
         # logger.info(f"Loading model weights from `{pretrained_checkpoint}`")
         model_keys = set(FrameworkModel.state_dict().keys())
         checkpoint_keys = set(model_state_dict.keys())

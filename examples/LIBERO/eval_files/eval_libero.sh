@@ -20,6 +20,9 @@ unnorm_key="franka"
 your_ckpt=/home/user01/jiangnan/starVLA/results/Checkpoints/1229_libero4in1_qwen3oft/checkpoints/steps_80000_pytorch_model.pt
 # export DEBUG=false
 
+max_memory=5
+interval=10
+
 folder_name=$(echo "$your_ckpt" | awk -F'/' '{print $(NF-2)"_"$(NF-1)"_"$NF}')
 # === End of environment variable configuration ===
 ###########################################################################################
@@ -39,4 +42,6 @@ ${LIBERO_Python} ./examples/LIBERO/eval_files/eval_libero.py \
     --args.port $base_port \
     --args.task-suite-name "$task_suite_name" \
     --args.num-trials-per-task "$num_trials_per_task" \
-    --args.video-out-path "$video_out_path"
+    --args.video-out-path "$video_out_path" \
+    --args.max_memory $max_memory \
+    --args.interval $interval

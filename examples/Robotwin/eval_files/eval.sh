@@ -1,6 +1,6 @@
 #!/bin/bash
 
-ROBOTWIN_PATH=/mnt/data/gaoning/code_repos/RoboTwin
+ROBOTWIN_PATH=/mnt/data/jiangnan/RoboTwin
 
 policy_name="model2robotwin_interface"
 task_name=${1}

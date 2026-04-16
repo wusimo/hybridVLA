@@ -11,15 +11,17 @@ export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
 # export NCCL_SOCKET_TIMEOUT_MS=360000
 ###########################################################################################
 # === Please modify the following paths according to your environment ===
-Framework_name=QwenPI
+Framework_name=RynnBrainOFT
 freeze_module_list=''
-base_vlm=playground/Pretrained_models/Qwen2.5-VL-3B-Instruct-Action
-config_yaml=./examples/calvin/train_files/starvla_train_calvin.yaml
+# base_vlm=playground/Pretrained_models/Qwen2.5-VL-3B-Instruct-Action
+base_vlm=/home/user01/jiangnan/starVLA/playground/Pretrained_models/RynnBrain-CoP-8B
+# config_yaml=./examples/calvin/train_files/starvla_train_calvin.yaml
+config_yaml=/home/user01/jiangnan/starVLA/examples/calvin/train_files/starvla_train_calvin_rynnbrain.yaml
 DIT_TYPE="DiT-B"
 calvin_data_root=playground/Datasets/calvin
 data_mix=calvin_task_D_D
 run_root_dir=./results/Checkpoints
-run_id=0118_starvla_qwenpi_calvin_task_D_D
+run_id=0118_starvla_rynnbrain_calvin_task_D_D_memory
 export action_input_dim=2048
 # === End of environment variable configuration ===
 ###########################################################################################
@@ -39,10 +41,14 @@ accelerate launch \
   --config_yaml ${config_yaml} \
   --framework.name ${Framework_name} \
   --framework.qwenvl.base_vlm ${base_vlm} \
+  --framework.qwenvl.memory True \
   --datasets.vla_data.data_root_dir ${calvin_data_root}\
   --datasets.vla_data.data_mix ${data_mix} \
   --datasets.vla_data.per_device_batch_size 4 \
-  --trainer.vla_data.video_backend torchvision_av \
+  --datasets.vla_data.memory True \
+  --datasets.vla_data.max_step 5 \
+  --datasets.vla_data.interval 10 \
+  --datasets.vla_data.video_backend torchvision_av \
   --trainer.freeze_modules ${freeze_module_list} \
   --trainer.max_train_steps 30000 \
   --trainer.save_interval 10000 \

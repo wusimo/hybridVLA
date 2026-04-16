@@ -54,7 +54,10 @@ class Args:
 
     job_name: str = "test"
 
+    max_memory: int = 5
 
+    interval: int = 10
+    
 def eval_libero(args: Args) -> None:
     logging.info(f"Arguments: {json.dumps(dataclasses.asdict(args), indent=4)}")
 

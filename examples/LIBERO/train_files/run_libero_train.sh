@@ -17,11 +17,11 @@ config_yaml=./examples/LIBERO/train_files/starvla_cotrain_libero.yaml
 libero_data_root=playground/Datasets/LEROBOT_LIBERO_DATA
 data_mix=libero_all
 run_root_dir=./results/Checkpoints
-run_id=0414_libero4in1_RynnBrain8OFT_memory
+run_id=0415_libero4in1_RynnBrain8OFT_memory_2
 # === End of environment variable configuration ===
 ###########################################################################################
 
-
+# export CUDA_VISIBLE_DEVICES=4,5,6,7
 # export WANDB_MODE=disabled
 
 output_dir=${run_root_dir}/${run_id}
@@ -37,7 +37,7 @@ accelerate launch \
   --config_yaml ${config_yaml} \
   --framework.name ${Framework_name} \
   --framework.qwenvl.base_vlm ${base_vlm} \
-  --datasets.vla_data.data_root_dir ${libero_data_root}\
+  --datasets.vla_data.data_root_dir ${libero_data_root} \
   --datasets.vla_data.data_mix ${data_mix} \
   --datasets.vla_data.per_device_batch_size 2 \
   --datasets.vla_data.video_backend torchvision_av \
