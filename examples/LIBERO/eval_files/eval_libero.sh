@@ -15,9 +15,9 @@ export PYTHONPATH=$(pwd):${PYTHONPATH} # let LIBERO find the websocket tools fro
 
 
 host="127.0.0.1"
-base_port=5694
+base_port=5696
 unnorm_key="franka"
-your_ckpt=/home/user01/jiangnan/starVLA/results/Checkpoints/1229_libero4in1_qwen3oft/checkpoints/steps_80000_pytorch_model.pt
+your_ckpt=results/Checkpoints/0420_libero4in1_RynnBrain8OFT_memory/checkpoints/steps_60000_pytorch_model.pt
 # export DEBUG=false
 
 max_memory=5
@@ -31,12 +31,12 @@ LOG_DIR="logs/$(date +"%Y%m%d_%H%M%S")"
 mkdir -p ${LOG_DIR}
 
 
-task_suite_name=libero_10
-num_trials_per_task=50
+task_suite_name=libero_spatial  # switched from libero_10 for quick debug
+num_trials_per_task=50           # reduced for quick debug
 video_out_path="results/${task_suite_name}/${folder_name}"
 
 
-${LIBERO_Python} ./examples/LIBERO/eval_files/eval_libero.py \
+${LIBERO_Python} ./examples/LIBERO/eval_files/eval_libero_3.py \
     --args.pretrained-path ${your_ckpt} \
     --args.host "$host" \
     --args.port $base_port \

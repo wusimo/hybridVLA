@@ -1,0 +1,651 @@
+\documentclass[11pt]{article}
+
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath,amssymb,amsthm}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{hyperref}
+\usepackage{url}
+\usepackage{xcolor}
+\usepackage{cite}
+\usepackage{authblk}
+\usepackage{algorithm}
+\usepackage{algpseudocode}
+\usepackage{subcaption}
+
+% Placeholder macro for experiment numbers still to be filled in.
+\newcommand{\todo}[1]{\textcolor{red}{\textbf{[TBD: #1]}}}
+\newcommand{\num}{--} % placeholder cell marker for tables
+
+\newtheorem{definition}{Definition}
+\newtheorem{proposition}{Proposition}
+\newtheorem{remark}{Remark}
+
+\title{Resolving Visual Observation Aliasing in\\
+Vision-Language-Action Models:\\
+A Feature-Level Short-Term Memory Adapter}
+
+\author[1]{Anonymous Authors}
+\affil[1]{Anonymous Institution}
+\date{\today}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+Vision-Language-Action (VLA) models for robotic manipulation are almost universally
+trained as \emph{Markov} policies that predict each action from the current-frame
+observation alone. We identify a specific, widespread, and silent failure mode of
+this design, which we call \textbf{visual observation aliasing}: pairs of trajectory
+states whose single-frame observations are nearly indistinguishable but whose expert
+actions are not, forcing a Markov policy to produce mode-averaged outputs. We
+formalize observation aliasing in the imitation-learning POMDP setting, propose a
+data-driven \emph{aliasing score} that flags which tasks and which trajectory states
+suffer from it, and show how the design of an effective memory module can be read
+off directly from the structure of the problem.
+
+Guided by this analysis we introduce the \textbf{Short-Term Memory Bank (STMB)}, a
+feature-level adapter that samples only $M{=}5$ past frames at a fixed interval
+$I{=}10$ and writes them into the DeepStack visual pathway of a Qwen3-VL backbone
+through a per-token, per-level gated slot-attention update. We further catalogue four
+previously unreported \emph{silent} failure modes of memory-augmented VLA pipelines
+(training--evaluation frame mismatch, zero-image padding, write-query self-reference,
+and causal confusion by history) and show that all four must be addressed for memory
+to pay off. On LIBERO (\textsc{spatial}, \textsc{object}, \textsc{goal}, \textsc{10},
+\textsc{90}) STMB yields \todo{overall gain}; an aliasing-stratified analysis
+confirms that gains correlate with the proposed aliasing score
+(\todo{correlation coefficient}), so the improvements are predictable from a
+property of the data rather than from global leaderboard effects.
+\end{abstract}
+
+%=========================================================================
+\section{Introduction}
+\label{sec:intro}
+
+\paragraph{The Markov assumption in VLAs is load-bearing, and brittle.}
+Modern Vision-Language-Action models~\cite{brohan2023rt2,kim2024openvla,black2024pi0}
+share a common simplification: the action at time $t$ is predicted from
+\emph{only} the current observation $o_t$ and the language instruction~$\ell$.
+This treats manipulation as a Markov Decision Process whose state is fully captured
+by a single RGB frame (plus, in some variants, proprioception). The simplification
+is extremely useful---it lets any pretrained VLM be repurposed as a policy with a
+light action head---but it is also load-bearing in a way that few papers discuss
+explicitly: once the current frame stops being a sufficient statistic of the
+world state, the training loss silently pushes the policy toward the mean of the
+conditional action distribution, and rollouts fail for reasons that look like
+stochastic noise rather than a structural defect.
+
+\paragraph{The problem this paper targets: visual observation aliasing.}
+We give this failure mode a name. \emph{Visual observation aliasing} occurs when
+two trajectory states $s_1 \neq s_2$ in the training distribution produce nearly
+identical current-frame observations $o_1 \approx o_2$ but are associated with
+expert actions $a_1, a_2$ drawn from meaningfully different modes
+(opposite directions, opposite gripper commands, different subtask phases). Under
+behaviour cloning, a Markov policy cannot distinguish $o_1$ from $o_2$ and is
+forced to regress to the conditional mean $\mathbb{E}[a \mid o]$, which is often
+outside the set of task-valid actions. In a pick-and-place episode the gripper
+looks \emph{identical} during the reach and the retract; the robot pose looks
+\emph{identical} mid-push and mid-pull; the wrist camera shows a similar patch
+right before contact and right after it. These are not edge cases: in
+\S\ref{sec:exp-alias} we show that in LIBERO a significant fraction of training
+states participate in at least one aliasing pair.
+
+\paragraph{Existing memory solutions either over-solve or under-solve the problem.}
+A natural response is to give the policy access to more than the current frame.
+The recent VLA literature takes several such steps: MemoryVLA~\cite{shi2025memoryvla}
+and ReMem-VLA~\cite{remem2025} add dual perceptual--cognitive memory or recurrent
+queries inside the language model; PAM~\cite{pam2025} stacks a dense 300-frame
+history; LoLA~\cite{lola2025} downsamples long-horizon observations; CoT-VLA
+introduces chain-of-thought visual tokens~\cite{zhao2025cotvla}. Each of these is
+a substantial architectural rewrite and each targets primarily
+\emph{long-horizon} or \emph{task-level} context. At the same time, a classical
+result in imitation learning---\emph{causal confusion}~\cite{dehaan2019causal}---
+warns that na\"ively adding observation history can \emph{hurt} performance by
+introducing nuisance correlates from past actions. The existing VLA memory
+literature does not reconcile these two pressures: it tends to over-parameterise
+the memory (which risks causal confusion) without first localising exactly what
+part of the single-frame policy is failing.
+
+\paragraph{A problem-driven design.}
+We argue that the right unit of analysis is not ``how much history can we fit''
+but ``how little history is strictly required to break the aliasing, and where in
+the network should it enter?'' Reading the problem back off of its definition, an
+adequate fix must: (P1) intervene at the \emph{perception} level, because aliasing
+is a perception-level rather than reasoning-level failure; (P2) deliver the
+intervention as a \emph{feature-level} correction of the current-frame
+representation, rather than as additional time-stamped tokens; (P3) use a
+\emph{sparse} past window whose time scale matches the task's manipulation phases,
+so that the memory provides discriminative low-frequency signal without
+re-introducing causal-confusion vulnerabilities; (P4) \emph{gate} the memory
+contribution per token, so that disambiguation is local (near the gripper, near
+the target) rather than a global feature replacement; (P5) expose the absolute
+time step, so that repetitions of the same visual motif in different task phases
+can still be told apart.
+
+\paragraph{STMB: a feature-level short-term memory adapter.}
+Our proposed module, the \textbf{Short-Term Memory Bank} (STMB), is an
+architecture derived from P1--P5. It maintains a tensor of past visual features at
+three DeepStack levels and two camera views, runs a per-level slot-attention read
+using the most recent past frame as the query, fuses the aggregated history with
+the current-frame features through a learned per-token sigmoid gate, and adds a
+sinusoidal encoding of the absolute time step. The fused features are written
+back into the DeepStack pathway of a Qwen3-VL backbone. The entire integration
+is a single conditional block in the vision--language forward pass.
+
+\paragraph{Four silent failure modes.}
+While instrumenting the memory-augmented pipeline we discovered four distinct
+failure modes that silently flatten the benefits of memory. (F1)
+\emph{Training--evaluation frame-index mismatch}: the dataloader collected past
+frames in a convention that differed from the online rollout buffer by one
+interval, so the memory seen at inference was not the memory seen at training.
+(F2) \emph{Zero-image padding} at the start of an episode, which injects an
+out-of-distribution black image into the memory bank where training would have
+repeated the earliest real frame. (F3) \emph{Write-query self-reference}: if the
+current frame is (incorrectly) included in the memory bank, the slot-attention
+read uses the current frame as both query and key, which collapses the update to
+a near-identity. (F4) \emph{Causal confusion by proxy}, the classical
+imitation-learning pitfall that memory-augmented VLA papers rarely acknowledge.
+These failures are silent because shapes, dtypes, and losses all appear correct.
+We report each, show how STMB's design choices and our alignment patch defuse
+them, and provide a checklist that other memory-augmented VLAs can apply.
+
+\paragraph{Contributions.} We make the following contributions:
+\begin{enumerate}
+    \item \textbf{Problem formulation.} We formalize \emph{visual observation
+    aliasing} in the VLA imitation-learning POMDP
+    (\S\ref{sec:problem}), and we introduce a data-driven \emph{aliasing score}
+    (Def.~\ref{def:alias}) that can be computed on any VLA dataset without
+    training.
+    \item \textbf{A problem-derived memory module.} We derive five design
+    constraints P1--P5 directly from the aliasing formulation and instantiate
+    them in \textbf{STMB}, a feature-level, per-token gated memory adapter over
+    DeepStack features (\S\ref{sec:method}).
+    \item \textbf{A diagnostic catalogue of silent failure modes} (F1--F4,
+    \S\ref{sec:diagnostics}) of memory-augmented VLA pipelines, with a minimal
+    code-level patch for each.
+    \item \textbf{Aliasing-stratified evaluation.} Beyond reporting overall
+    success rates on LIBERO, we stratify tasks by the aliasing score and show
+    that gains from STMB are predicted by this property of the data rather
+    than by a global leaderboard effect (\S\ref{sec:exp-alias}).
+    \item \textbf{Reproducible training and evaluation pipeline} built on
+    RynnBrain / Qwen3-VL with a single-file memory integration, released with
+    checkpoints and configurations.
+\end{enumerate}
+
+\paragraph{Paper organization.} \S\ref{sec:related} positions our approach
+against existing memory-augmented VLAs and the causal-confusion literature.
+\S\ref{sec:problem} formalizes visual observation aliasing. \S\ref{sec:method}
+introduces STMB and details its integration with the VLM.
+\S\ref{sec:diagnostics} catalogues the four silent failure modes and documents
+our alignment patch. \S\ref{sec:exp} reports LIBERO results, the aliasing-
+stratified analysis, and ablations. \S\ref{sec:discussion} discusses limitations
+and extensions.
+
+%=========================================================================
+\section{Related Work}
+\label{sec:related}
+
+\paragraph{Vision-Language-Action models.}
+OpenVLA~\cite{kim2024openvla}, RT-2~\cite{brohan2023rt2}, $\pi_0$~\cite{black2024pi0}
+and concurrent systems adapt a pretrained VLM to manipulation by attaching an
+action head (discrete tokens, MLP regression, or a flow-matching expert). All of
+these operate under the Markov assumption: the action at step $t$ is a function
+of $(o_t, \ell)$. Our work targets exactly the regime where this assumption
+breaks down.
+
+\paragraph{Memory-augmented VLA.}
+MemoryVLA~\cite{shi2025memoryvla} introduces a perceptual--cognitive dual memory
+bank and a diffusion action head; ReMem-VLA~\cite{remem2025} adds frame-level and
+chunk-level recurrent queries that propagate through the language model;
+PAM~\cite{pam2025} addresses state ambiguity with a 300-frame dense history and
+an adaptive working-memory recoding step; LoLA~\cite{lola2025} combines current
+observation encoding with downsampled historical motion encoding for long-horizon
+tasks. These methods are primarily designed for long-horizon or task-level
+context. We instead target the \emph{perception} level where the aliasing
+problem manifests, and show in \S\ref{sec:exp} that a feature-level adapter at
+this layer is sufficient for the aliasing regime.
+
+\paragraph{Causal confusion in imitation learning.}
+De Haan et al.~\cite{dehaan2019causal} show that na\"ively feeding a history of
+observations to a behaviour-cloning policy can \emph{hurt} performance because
+the history contains nuisance correlates with past actions. Recent work
+extends this analysis to robotic imitation~\cite{causalbot2025}. Our sparse
+sampling ($M{=}5$, $I{=}10$) and per-token gating are inductive-bias choices
+designed to admit only the discriminative low-frequency signal required by the
+aliasing formulation while remaining inhospitable to the kind of fine-grained
+past-action traces that drive causal confusion.
+
+\paragraph{Visual reasoning chains for VLA.}
+CoT-VLA~\cite{zhao2025cotvla} integrates chain-of-thought visual tokens into
+the prompt. This adds reasoning-level context but operates on the prompt and
+therefore inflates sequence length. Our approach is complementary: STMB augments
+perception at feature level and can be stacked under CoT-style prompts.
+
+%=========================================================================
+\section{Problem Formulation: Visual Observation Aliasing}
+\label{sec:problem}
+
+We consider a language-conditioned manipulation task as a POMDP
+$(\mathcal{S}, \mathcal{A}, \mathcal{O}, T, \Omega, \ell)$, where $\mathcal{S}$ is
+the (latent) world state, $\mathcal{A}$ is the robot action space, $\mathcal{O}$
+is the image observation space, $T$ is the transition kernel, $\Omega$ is the
+observation kernel, and $\ell$ is a language instruction. Expert demonstrations
+induce a joint distribution $p(s, o, a \mid \ell)$.
+
+A \emph{Markov VLA policy} $\pi_\theta(a \mid o, \ell)$ is trained by imitation
+against a data distribution $\widehat{p}(o, a \mid \ell)$ and in particular
+makes no use of trajectory history.
+
+\begin{definition}[Observation aliasing pair]
+\label{def:alias}
+Let $d(\cdot,\cdot)$ be a metric on the VLM feature space. Given a threshold
+$\varepsilon > 0$ and an action-difference threshold $\delta > 0$, a pair of
+training points $(o_i, a_i, \ell)$ and $(o_j, a_j, \ell)$ is an
+\emph{$(\varepsilon, \delta)$-aliasing pair} if
+\[
+d(\phi(o_i), \phi(o_j)) \le \varepsilon \quad \text{and} \quad
+\|a_i - a_j\|_2 \ge \delta,
+\]
+where $\phi$ is a fixed visual encoder (e.g.~the frozen Qwen3-VL DeepStack
+output). The \emph{aliasing score} of an observation $o_i$ is the density of
+aliasing partners in its $k$-nearest-neighbour set:
+\[
+\mathrm{Alias}_k(o_i) = \frac{1}{k}\sum_{j \in \mathrm{kNN}_k(o_i)}
+\mathbf{1}\!\left[\|a_i - a_j\|_2 \ge \delta\right].
+\]
+\end{definition}
+
+\begin{proposition}[Mode averaging under aliasing]
+\label{prop:modeavg}
+Let $R(\theta) = \mathbb{E}_{(o,a)}[\|\pi_\theta(o) - a\|_2^2]$ be the $L_2$
+imitation objective. For any $o$, the optimal Markov policy satisfies
+$\pi^*(o) = \mathbb{E}_{a \sim p(a \mid o)}[a]$. If the set
+$\mathrm{Alias}_k(o)$ is high and the conditional action distribution is
+multi-modal, $\pi^*(o)$ lies outside the set of task-valid actions.
+\end{proposition}
+
+This proposition makes precise the ``silent failure'' we target: at high-
+aliasing observations the Bayes-optimal Markov policy is provably bad. The rest
+of this paper derives the minimum context required to make the policy
+non-Markov specifically at these points.
+
+\begin{remark}[What kind of memory is enough?]
+The aliasing pairs that occur in manipulation are almost always disambiguated
+by \emph{low-frequency motion cues} (is the arm extending or retracting?), by
+\emph{recent contact events} (did the gripper just close?), or by \emph{task
+phase} (are we in the reach, transport, or release segment?). All three are
+signals at the time scale of whole sub-actions, i.e.~seconds, not of control
+steps. A memory module with sparse sampling at a task-relevant interval is
+both \emph{necessary} (single-frame is insufficient) and \emph{sufficient}
+(dense kinematic detail is not required) for this problem class.
+\end{remark}
+
+%=========================================================================
+\section{Method: Short-Term Memory Bank (STMB)}
+\label{sec:method}
+
+\subsection{Design principles}
+\label{sec:principles}
+
+We state five constraints implied by the aliasing formulation and use them to
+motivate each design choice:
+\begin{description}
+    \item[P1. Perception-level intervention.] Aliasing is a perception-level
+    failure; the fix should live in the same layer where the problem occurs.
+    \item[P2. Feature-level rewrite.] The disambiguation should deliver a
+    corrected current-frame representation, not an additional reasoning stream.
+    \item[P3. Sparse sampling.] The task-relevant time constant is seconds; we
+    sample $M{=}5$ frames at interval $I{=}10$.
+    \item[P4. Per-token gating.] Aliasing is local; fusion must be selective.
+    \item[P5. Absolute-time encoding.] Different task phases may share visual
+    motifs; an absolute timestamp prevents the module from conflating them.
+\end{description}
+
+\subsection{Architecture}
+\label{sec:arch}
+
+Let $V \in \mathbb{R}^{B \times L \times V \times N \times D}$ denote the
+current-frame DeepStack features, with $B$ batch, $L{=}3$ DeepStack levels,
+$V{=}2$ camera views, $N$ patch-merged tokens per view, $D$ feature dimension.
+Let $M \in \mathbb{R}^{B \times L \times T \times V \times N \times D}$ denote
+the memory tensor with $T$ past timesteps. For each DeepStack level
+$\ell \in \{1,\dots,L\}$:
+
+\begin{align}
+\widetilde{V}_\ell &= V_\ell + \mathrm{PE}(t),                              \label{eq:pe}\\
+H_\ell            &= \mathrm{Attn}_\ell^{\mathrm{read}}\!\big(M_{\ell,-1},\;
+                      \mathrm{flatten}_T(M_\ell)\big),                      \label{eq:read}\\
+g_\ell            &= \sigma\!\big(W_\ell [H_\ell ;\; \widetilde{V}_\ell]\big), \label{eq:gate}\\
+V'_\ell           &= \mathrm{RMSNorm}_\ell\!\big(g_\ell \odot \widetilde{V}_\ell
+                      + (1-g_\ell) \odot H_\ell\big).                        \label{eq:fuse}
+\end{align}
+
+Eq.~\eqref{eq:pe} injects the absolute timestep, realizing P5.
+Eq.~\eqref{eq:read} performs a slot-attention read using the most recent past
+frame $M_{\ell,-1}$ as query and the flattened memory tensor as key-value,
+realizing P3. Eq.~\eqref{eq:gate} computes a per-token, per-view, per-level
+gate, realizing P4. Eq.~\eqref{eq:fuse} produces the fused feature that replaces
+$V_\ell$ in the DeepStack tuple handed to the language model, realizing P1--P2.
+The parameters $\{W_\ell, \mathrm{Attn}_\ell^{\mathrm{read}}, \mathrm{RMSNorm}_\ell\}$
+are independent across levels.
+
+\subsection{Memory construction}
+\label{sec:memconstr}
+
+\paragraph{Training.} For a sample at trajectory step $b$ we collect
+\[
+\mathrm{idx}_i = \max(0,\; b - i \cdot I),\qquad i \in \{M, M{-}1, \dots, 1\}.
+\]
+This yields an oldest-first window that \emph{excludes} the current frame~$b$
+and falls back to the earliest frame when the trajectory is too short.
+
+\paragraph{Rollout.} At inference the \emph{same} rule is applied against the
+online history buffer: the current frame is not part of the memory, and padding
+repeats the earliest cached frame. See Alg.~\ref{alg:mem} for pseudocode.
+
+\begin{algorithm}[h]
+\caption{Online memory construction at rollout step $b$}
+\label{alg:mem}
+\begin{algorithmic}[1]
+\State \textbf{Input:} history buffer $H$ (each entry a list of views), interval $I$, memory length $M$
+\State \textbf{Output:} memory frames $\mathcal{M}$ (oldest first, current frame excluded)
+\State $b \gets |H| - 1$
+\For{$i = M, M-1, \dots, 1$}
+    \State $j \gets \max(0,\; b - i \cdot I)$
+    \State append $H[j]$ to $\mathcal{M}$
+\EndFor
+\State \Return $\mathcal{M}$
+\end{algorithmic}
+\end{algorithm}
+
+\subsection{Integration with the VLM}
+
+The memory forward pass is a single conditional block inside the Qwen3-VL model
+forward. Memory images are encoded by the existing vision tower and DeepStack
+projector into features of the same shape as $V$; these features are rearranged
+into the memory tensor $M$ and consumed by Eqs.~\eqref{eq:pe}--\eqref{eq:fuse};
+the resulting $V'$ replaces the original DeepStack tuple passed to the language
+model.
+
+\subsection{Action head and training objective}
+We use an OFT-style L1 regression head: the hidden states at $C$ action
+placeholder tokens are gathered from the last transformer layer, passed through
+an MLP, and supervised against normalized expert actions. For STMB the head is
+unchanged from the memoryless baseline.
+
+%=========================================================================
+\section{Diagnostics: Four Silent Failure Modes}
+\label{sec:diagnostics}
+
+Memory-augmented VLA pipelines have a large surface area, and it is easy for
+the memory pathway to be miscalibrated without any loud error signal. We
+enumerate four failure modes we encountered and explain how STMB avoids each.
+
+\paragraph{F1. Training--evaluation frame-index mismatch.}
+The training dataloader collects memory at indices $\{b - M I, \dots, b - I\}$,
+which \emph{excludes} the current frame. An unaligned rollout that instead
+appends the current frame at the end of the memory shifts every slot by one
+interval and changes the most-recent-memory slot from $b - I$ to $b$.
+Because the slot-attention write query is $M_{\ell,-1}$, this shift directly
+attacks the query--key relationship that the module was trained to exploit.
+
+\paragraph{F2. Zero-image padding.}
+When fewer than $M$ past frames are available, a na\"ive rollout pads with an
+all-zero RGB image. After RGB normalization such an image is a large-norm
+out-of-distribution input that the memory pathway never saw at training, where
+padding was implemented by repeating the earliest real frame.
+
+\paragraph{F3. Write-query self-reference.}
+If F1 is present (current frame included at $M_{\ell,-1}$), the slot-attention
+read degenerates into attending the current frame against a tensor that
+includes itself, biasing the gate toward an identity update and effectively
+disabling memory.
+
+\paragraph{F4. Causal confusion by history.}
+The classical pitfall~\cite{dehaan2019causal}: history correlates with past
+actions and is an easy shortcut for the policy. We mitigate this structurally
+by (a) sparse sampling at $I{=}10$, which strips fine-grained action traces,
+and (b) per-token gating, which keeps the memory contribution local to regions
+that actually need disambiguation.
+
+\paragraph{A minimal patch.}
+Algorithm~\ref{alg:mem} is the minimal change needed to eliminate F1--F3
+simultaneously: it follows the training convention exactly. We report the
+effect of this patch as a stand-alone ablation in \S\ref{sec:exp-ablation}.
+
+%=========================================================================
+\section{Experiments}
+\label{sec:exp}
+
+\subsection{Setup}
+
+\paragraph{Backbone.} Qwen3-VL (RynnBrain-CoP-8B~\cite{alibaba2025rynnbrain}),
+loaded with \texttt{bf16} and \texttt{flash\_attention\_2}. The DeepStack
+projector is kept active; STMB operates on its output.
+
+\paragraph{Action head.} \texttt{L1RegressionActionHead} with
+\texttt{action\_dim}=7, \texttt{state\_dim}=7, chunk $C{=}8$
+(future window $7$, past window $0$).
+
+\paragraph{Memory hyperparameters.} $M{=}5$, $I{=}10$, $L{=}3$, $V{=}2$,
+hidden dim matching the backbone. Memory bank parameters initialised as in
+\S\ref{sec:arch}.
+
+\paragraph{Data.} LIBERO converted to LeRobot v2 / v3 format; combined
+\texttt{libero\_all} split for training. Evaluation on the five suites
+\textsc{spatial}, \textsc{object}, \textsc{goal}, \textsc{10}, \textsc{90}
+with 50 trials per task.
+
+\paragraph{Optimisation.} Per-module learning rates:
+\texttt{qwen\_vl\_interface}=$1\mathrm{e}{-}5$,
+\texttt{action\_model}=$1\mathrm{e}{-}4$;
+cosine schedule with warmup; AdamW ($\beta{=}(0.9, 0.95)$). Accelerate with
+DeepSpeed ZeRO-2, gradient checkpointing, mixed precision.
+
+\paragraph{Compute.} \todo{GPU hours / hardware}. \paragraph{Seeds.}
+\todo{number of seeds}.
+
+\subsection{Main results on LIBERO}
+
+\begin{table}[h]
+\centering
+\caption{Success rate (\%) on LIBERO. All rows share the same backbone, action
+head, dataloader, and schedule. ``Unaligned'' denotes STMB \emph{without} the
+memory-construction patch from \S\ref{sec:diagnostics}; ``Aligned'' is the full
+proposed method. Arrow vs.~memoryless baseline in parentheses.}
+\label{tab:libero}
+\small
+\begin{tabular}{lcccccc}
+\toprule
+Method & \textsc{spatial} & \textsc{object} & \textsc{goal} & \textsc{10} & \textsc{90} & Avg. \\
+\midrule
+Memoryless baseline (RynnBrain-OFT)    & \num & \num & \num & \num & \num & \num \\
+\quad + STMB (unaligned)               & \num & \num & \num & \num & \num & \num \\
+\quad + STMB (aligned, \textbf{ours})  & \num & \num & \num & \num & \num & \num \\
+\midrule
+MemoryVLA~\cite{shi2025memoryvla}      & \num & \num & \num & \num & \num & \num \\
+PAM~\cite{pam2025}                     & \num & \num & \num & \num & \num & \num \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Aliasing-stratified evaluation}
+\label{sec:exp-alias}
+
+We bucket the 130 LIBERO tasks by task-average aliasing score
+(Def.~\ref{def:alias}, computed with a frozen Qwen3-VL DeepStack encoder, $k{=}32$,
+action threshold $\delta$ set at the 75\textsuperscript{th} percentile of
+inter-action distance). We then report gains of STMB over the memoryless
+baseline stratified into low / medium / high aliasing buckets.
+
+\begin{table}[h]
+\centering
+\caption{Aliasing-stratified gains. We expect low aliasing: parity; high
+aliasing: largest gains.}
+\label{tab:alias-bucket}
+\small
+\begin{tabular}{lcccc}
+\toprule
+Aliasing bucket & \# tasks & Baseline SR & + STMB SR & $\Delta$ \\
+\midrule
+Low    & \num & \num & \num & \num \\
+Medium & \num & \num & \num & \num \\
+High   & \num & \num & \num & \num \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{figure}[h]
+\centering
+\todo{Scatter plot: x-axis = task aliasing score, y-axis = STMB gain over
+baseline, one point per LIBERO task. Overlay a linear fit and report the
+correlation coefficient.}
+\caption{Per-task correlation between aliasing score and STMB gain.}
+\label{fig:alias-scatter}
+\end{figure}
+
+\subsection{Ablations}
+\label{sec:exp-ablation}
+
+We ablate each of P1--P5 and the memory-construction patch independently.
+
+\begin{table}[h]
+\centering
+\caption{Ablations on LIBERO (average success rate \%).}
+\label{tab:ablations}
+\small
+\begin{tabular}{lc}
+\toprule
+Variant & Avg.~SR \\
+\midrule
+STMB full (ours)                                                 & \num \\
+(P3) $M{=}1$ (single past frame)                                  & \num \\
+(P3) $M{=}3$                                                      & \num \\
+(P3) $M{=}7$                                                      & \num \\
+(P3) Interval $I{=}5$                                              & \num \\
+(P3) Interval $I{=}20$                                             & \num \\
+(P4) Remove gate (plain residual fusion $V' = V + H$)             & \num \\
+(P5) Remove temporal PE                                           & \num \\
+Single-view memory (agentview only)                               & \num \\
+Single-view memory (wrist only)                                   & \num \\
+Unaligned memory construction (reproduces F1+F2+F3)               & \num \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Failure-mode study (F1--F4)}
+
+We construct targeted diagnostic experiments: (i)~force the memory at eval to
+include the current frame (F1/F3), (ii)~replace the earliest-frame padding with
+zeros (F2), (iii)~subsample at $I{=}1$ to stress-test causal confusion (F4).
+\todo{Results table and discussion.}
+
+%=========================================================================
+\section{Discussion}
+\label{sec:discussion}
+
+\paragraph{Why perception-level rather than reasoning-level memory?}
+Aliasing is a property of observations, not of task plans. Fixing it at the
+language-model input (with extra memory tokens) pays a sequence-length cost
+to solve a problem that sits one layer lower. STMB writes corrections directly
+into the pathway where the problem manifests.
+
+\paragraph{Relation to long-horizon VLAs.}
+STMB is deliberately short-term. Tasks whose causal support exceeds $M \cdot I$
+frames are out of scope; they are better served by architectures such as
+MemoryVLA and LoLA, which STMB is complementary to (see \S\ref{sec:related}).
+
+\paragraph{Limitations.}
+(i)~STMB is currently specialised to DeepStack-style VLMs; extending to
+single-projector backbones is future work. (ii)~The aliasing score uses a
+fixed visual encoder; a learned aliasing score could be more predictive.
+(iii)~We do not address non-visual aliasing (e.g., identical visuals but
+different proprioception); joint state--image memory is a natural extension.
+
+%=========================================================================
+\section{Conclusion}
+
+We named and formalised \emph{visual observation aliasing}, a silent but
+pervasive failure mode of Markov VLA policies. Reading the problem back off its
+definition gave us five concrete design constraints, which we instantiated in
+STMB, a feature-level memory adapter that writes directly into the DeepStack
+visual pathway of a VLM backbone. A diagnostic catalogue of four silent
+failure modes, together with a one-algorithm alignment patch, makes the
+pipeline reproducible.
+Aliasing-stratified evaluation on LIBERO \todo{ties the improvement to a
+property of the data}, suggesting that the right question for
+memory-augmented VLAs is not ``how much history'' but ``what kind of
+ambiguity does the history dissolve.''
+
+%=========================================================================
+\bibliographystyle{plain}
+\begin{thebibliography}{99}
+
+\bibitem{brohan2023rt2}
+A.~Brohan et al.
+\newblock RT-2: Vision-Language-Action Models Transfer Web Knowledge to Robotic Control.
+\newblock \emph{CoRL}, 2023.
+
+\bibitem{kim2024openvla}
+M.~Kim et al.
+\newblock OpenVLA: An Open-Source Vision-Language-Action Model.
+\newblock \emph{CoRL}, 2024.
+
+\bibitem{black2024pi0}
+K.~Black et al.
+\newblock $\pi_0$: A Vision-Language-Action Flow Model for General Robot Control.
+\newblock arXiv:2410.24164, 2024.
+
+\bibitem{bai2023qwen}
+J.~Bai et al.
+\newblock Qwen-VL: A Versatile Vision-Language Model for Understanding, Localization, Text Reading, and Beyond.
+\newblock arXiv:2308.12966, 2023.
+
+\bibitem{locatello2020slot}
+F.~Locatello et al.
+\newblock Object-Centric Learning with Slot Attention.
+\newblock \emph{NeurIPS}, 2020.
+
+\bibitem{dehaan2019causal}
+P.~de~Haan, D.~Jayaraman, S.~Levine.
+\newblock Causal Confusion in Imitation Learning.
+\newblock \emph{NeurIPS}, 2019.
+
+\bibitem{causalbot2025}
+Anonymous.
+\newblock Improving Generalization Ability of Robotic Imitation Learning by Resolving Causal Confusion in Observations.
+\newblock arXiv:2507.22380, 2025.
+
+\bibitem{shi2025memoryvla}
+S.~Shi et al.
+\newblock MemoryVLA: Perceptual-Cognitive Memory in Vision-Language-Action Models for Robotic Manipulation.
+\newblock arXiv:2508.19236, 2025.
+
+\bibitem{remem2025}
+Anonymous.
+\newblock Empowering Vision-Language-Action Model with Memory via Dual-Level Recurrent Queries.
+\newblock arXiv:2603.12942, 2025.
+
+\bibitem{pam2025}
+Anonymous.
+\newblock Resolving State Ambiguity in Robot Manipulation via Adaptive Working Memory Recoding.
+\newblock arXiv:2512.24638, 2025.
+
+\bibitem{lola2025}
+Anonymous.
+\newblock LoLA: Long Horizon Latent Action Learning for General Robot Manipulation.
+\newblock arXiv:2512.20166, 2025.
+
+\bibitem{zhao2025cotvla}
+Y.~Zhao et al.
+\newblock CoT-VLA: Visual Chain-of-Thought Reasoning for Vision-Language-Action Models.
+\newblock \emph{CVPR}, 2025.
+
+\bibitem{alibaba2025rynnbrain}
+Alibaba DAMO Academy.
+\newblock RynnBrain: A Vision-Language Model Family for Embodied Agents.
+\newblock Technical Report, 2025.
+
+\end{thebibliography}
+
+\end{document}

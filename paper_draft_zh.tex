@@ -1,0 +1,547 @@
+% !TEX program = xelatex
+% 编译命令：xelatex paper_draft_zh.tex
+\documentclass[11pt]{ctexart}
+
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath,amssymb,amsthm}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{hyperref}
+\usepackage{url}
+\usepackage{xcolor}
+\usepackage{cite}
+\usepackage{algorithm}
+\usepackage{algpseudocode}
+\usepackage{subcaption}
+
+% 实验数字待填位置
+\newcommand{\todo}[1]{\textcolor{red}{\textbf{[待填：#1]}}}
+\newcommand{\num}{--}
+
+\newtheorem{definition}{定义}
+\newtheorem{proposition}{命题}
+\newtheorem{remark}{备注}
+
+% 让 algorithm 环境支持中文标题
+\floatname{algorithm}{算法}
+\renewcommand{\algorithmicrequire}{\textbf{输入：}}
+\renewcommand{\algorithmicensure}{\textbf{输出：}}
+
+\title{消解视觉-语言-动作模型中的\\
+视觉观测混叠：\\
+一个特征级的短时记忆适配器}
+
+\author{匿名作者}
+\date{\today}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+视觉-语言-动作模型（Vision-Language-Action, VLA）在机器人操作任务中几乎普遍被训练为
+\emph{Markov} 策略，即仅根据当前帧观测预测每一步动作。本文识别并命名了这一设计下一种
+具体、普遍、且静默的失败模式——\textbf{视觉观测混叠（Visual Observation Aliasing）}：
+训练集中存在成对的轨迹状态，其单帧观测几乎不可分辨，但对应的专家动作却属于明显不同
+的模式，迫使 Markov 策略在这些状态上输出模式平均（mode-averaged）的动作。我们在模仿
+学习 POMDP 框架下形式化了该问题，给出一个数据驱动的 \emph{混叠分数（aliasing score）}
+用于标记哪些任务、哪些状态真正受其影响，并说明一个有效记忆模块的架构可以直接从该问题
+的结构读出。
+
+在此分析的指引下，我们提出 \textbf{短时记忆库（Short-Term Memory Bank, STMB）}，
+一个特征级适配器：以固定间隔 $I{=}10$ 采样 $M{=}5$ 帧历史，并通过逐 token 的门控
+slot-attention 更新将历史写入 Qwen3-VL 主干的 DeepStack 视觉通路。我们进一步汇总了记忆增强 VLA 管线中
+四类此前未被系统报告的 \emph{静默失败模式}（训练/测评帧索引不对齐、零图像填充、
+写查询自指、历史引发的因果混淆），并证明必须同时修复这四类问题，记忆模块才会真正带来
+收益。在 LIBERO（\textsc{spatial}、\textsc{object}、\textsc{goal}、\textsc{10}、
+\textsc{90}）上，STMB 带来 \todo{总体提升} 的成功率增益；按混叠分数分层分析进一步
+确认了增益与该分数相关（\todo{相关系数}），这说明模型的改进可以由数据的一个属性
+预测，而非来自榜单层面的偶然波动。
+\end{abstract}
+
+%=========================================================================
+\section{引言}
+\label{sec:intro}
+
+\paragraph{VLA 的 Markov 假设承受重量，但易碎。}
+现代的 VLA 模型~\cite{brohan2023rt2,kim2024openvla,black2024pi0} 共享一个简化：
+时刻 $t$ 的动作仅由当前观测 $o_t$ 和语言指令 $\ell$ 决定。这一简化把操作任务当作一个
+以单张 RGB 帧为状态的 MDP，它的好处极其明显——任何预训练 VLM 都可以通过挂一个轻量动作
+头被改造成策略。但它同时承受着重量：一旦当前帧不再是世界状态的充分统计量，模仿学习的
+损失就会无声地把策略推向条件动作分布的均值，而滚动部署失败时看起来像随机噪声，并不
+像是一个结构性缺陷。
+
+\paragraph{本文要攻克的问题：视觉观测混叠。}
+我们为这种失败模式赋予一个名称。\emph{视觉观测混叠} 指的是：训练分布中存在两个轨迹状态
+$s_1 \neq s_2$，它们对应的当前帧观测 $o_1 \approx o_2$ 几乎无法区分，但专家动作
+$a_1, a_2$ 却采样自显著不同的模式（方向相反、夹爪指令相反、处于不同子任务阶段）。
+行为克隆下的 Markov 策略无法区分 $o_1, o_2$，只能回归到条件均值 $\mathbb{E}[a\mid o]$
+——而这个均值往往根本不在任务合法的动作集合之内。比如 pick-and-place 片段里，伸手与
+缩回时的夹爪画面\emph{完全一致}；在推拉之中，机械臂姿态\emph{几乎一样}；腕相机
+接触之前和接触之后，看到的也只是差别很小的局部贴片。这些不是边界情形：
+\S\ref{sec:exp-alias} 将表明 LIBERO 上有相当比例的训练状态至少参与一对混叠对。
+
+\paragraph{现有记忆方案要么过度、要么不足。}
+一个自然的应对是让策略看到不止当前一帧。最近的 VLA 文献给出了多种路径：
+MemoryVLA~\cite{shi2025memoryvla} 与 ReMem-VLA~\cite{remem2025} 在语言模型中加入
+感知-认知双记忆或循环查询；PAM~\cite{pam2025} 堆叠 300 帧密集历史；
+LoLA~\cite{lola2025} 将长时观测进行下采样；CoT-VLA 引入视觉思维链 token~\cite{zhao2025cotvla}。
+这些工作都是较大的架构重写，且目标主要是 \emph{长时} 或 \emph{任务级} 上下文。与此
+同时，模仿学习领域的一项经典结果——\emph{因果混淆（causal confusion）}~\cite{dehaan2019causal}
+——警告我们：天真地加入观测历史\emph{可能反而掉点}，因为历史会引入与过去动作相关的
+干扰因子。现有 VLA 记忆文献并没有调和这两种压力：它们倾向于在没有先定位单帧策略
+\emph{究竟哪里失败} 的情况下，过度参数化地堆记忆（反而更易触发因果混淆）。
+
+\paragraph{一个由问题推出的设计。}
+我们主张，真正应该问的不是 “历史能塞多少”，而是 “要打破混叠，严格需要多少历史、应从
+网络的哪一层进入”。从问题定义反读，一个合格的修复应当满足：
+(P1) 在\emph{感知层}介入，因为混叠是感知级而非推理级的失败；
+(P2) 以\emph{特征级}修正当前帧表示，而不是以追加的时间戳 token；
+(P3) 使用\emph{稀疏}的历史窗口，时间尺度匹配操作任务的子阶段，从而提供有鉴别力的
+低频信号，同时不给因果混淆留空间；
+(P4) 逐 token \emph{门控} 历史贡献，让消歧发生在局部（夹爪附近、目标附近），而不是
+替换整幅特征；
+(P5) 显式注入绝对时间步，使不同任务阶段的相似视觉模式仍可区分。
+
+\paragraph{STMB：特征级的短时记忆适配器。}
+由 P1–P5 导出的架构即为本文提出的 \textbf{短时记忆库（STMB）}。它在三个 DeepStack
+层级与两个相机视角上维护一份过去帧的特征张量，每层用最近一帧作为 query 做
+slot-attention 读取，用逐 token 的 sigmoid 门控将聚合历史与当前帧特征融合，并叠加
+绝对时间步的正弦编码。融合后的特征\emph{写回} Qwen3-VL 主干的 DeepStack 通路。
+整个集成只是视觉-语言前向中一个条件分支块。
+
+\paragraph{四类静默失败模式。}
+在实现记忆管线的过程中我们发现四种独立的静默失败模式，它们会悄无声息地抹平记忆模块
+的收益。(F1) \emph{训练/测评帧索引不对齐}：训练集的数据读取把历史帧的索引约定设成一种，
+在线 rollout 的 buffer 又偏移一个 interval，于是训练阶段见过的记忆切片和推理阶段看到
+的不是同一种。(F2) \emph{零图像填充}：episode 初期历史帧不足时，朴素 rollout 会用
+全零 RGB 图补位，而训练端是用最早的真实帧做重复填充；归一化后零图是一个
+分布外的大范数输入。(F3) \emph{写查询自指}：如果（因 F1）当前帧被错误地塞进记忆最后
+一格，slot-attention 的写查询就是在“对着自身 attend”，门控会退化为近似恒等更新，
+记忆实质被关掉。(F4) \emph{因果混淆}：经典的模仿学习陷阱，记忆增强的 VLA 文献中鲜有
+工作显式承认。这些失败是“静默”的，因为张量形状、dtype 与损失曲线一切正常。我们逐条
+解释 STMB 的设计选择及对齐补丁如何一并防御它们，并以此给出一份可供其他
+记忆增强 VLA 复用的检查清单。
+
+\paragraph{贡献。} 本文的贡献包括：
+\begin{enumerate}
+    \item \textbf{问题形式化}：在 VLA 的模仿学习 POMDP 下正式定义 \emph{视觉观测混叠}
+    （\S\ref{sec:problem}），并给出可不训练、直接在任意 VLA 数据集上计算的
+    \emph{混叠分数}（定义~\ref{def:alias}）。
+    \item \textbf{由问题推出的记忆架构}：从混叠定义直接读出五条设计约束 P1–P5，并
+    将其实例化为 \textbf{STMB}：一个特征级、逐 token 门控的 DeepStack 通路
+    记忆适配器（\S\ref{sec:method}）。
+    \item \textbf{静默失败模式诊断清单}：系统化汇总记忆增强 VLA 管线的四类静默失败
+    F1–F4（\S\ref{sec:diagnostics}），并对每一类给出最小代码级修复。
+    \item \textbf{按混叠分层的测评}：在 LIBERO 主榜单之外，按每个任务的混叠分数
+    分层报告 STMB 的增益，说明其改善由数据属性可预测而非来自榜单偶然（\S\ref{sec:exp-alias}）。
+    \item \textbf{可复现的训练/测评管线}：基于 RynnBrain / Qwen3-VL，单文件级别的
+    记忆集成，随代码、checkpoint 与配置一并开源。
+\end{enumerate}
+
+\paragraph{组织。} \S\ref{sec:related} 将本文方法与现有记忆增强 VLA 及因果混淆文献
+对齐；\S\ref{sec:problem} 形式化视觉观测混叠；\S\ref{sec:method} 介绍 STMB 架构与
+其与 VLM 的集成；\S\ref{sec:diagnostics} 汇总四类静默失败模式及对齐补丁；
+\S\ref{sec:exp} 报告 LIBERO 主结果、混叠分层分析与消融；\S\ref{sec:discussion}
+讨论局限与扩展。
+
+%=========================================================================
+\section{相关工作}
+\label{sec:related}
+
+\paragraph{视觉-语言-动作模型。}
+OpenVLA~\cite{kim2024openvla}、RT-2~\cite{brohan2023rt2}、$\pi_0$~\cite{black2024pi0}
+以及同时期的系统都将预训练 VLM 挂一个动作头（离散 token、MLP 回归或 flow-matching
+expert）用于操作。它们在本质上都遵循 Markov 假设：$t$ 时的动作仅是 $(o_t, \ell)$
+的函数。我们的工作恰好针对此假设崩溃的区间。
+
+\paragraph{记忆增强的 VLA。}
+MemoryVLA~\cite{shi2025memoryvla} 引入感知-认知双记忆库与 diffusion 动作头；
+ReMem-VLA~\cite{remem2025} 通过在语言模型中传播帧级与 chunk 级可学习查询获得长时
+记忆；PAM~\cite{pam2025} 用 300 帧密集历史 + 自适应工作记忆重编码来消除状态歧义；
+LoLA~\cite{lola2025} 融合当前观测编码与下采样的历史动作编码以应对长时任务。它们主要
+针对长时或任务级上下文。我们把干预点放在混叠问题真正发生的 \emph{感知层}，
+\S\ref{sec:exp} 将表明，在这一层做特征级适配已经足以覆盖混叠区间。
+
+\paragraph{模仿学习中的因果混淆。}
+de Haan 等人~\cite{dehaan2019causal} 指出：朴素地把历史观测喂给行为克隆策略会
+\emph{伤害}性能，因为历史与过去动作相关，会成为一条廉价捷径。后续工作将这一分析扩展到
+机器人模仿~\cite{causalbot2025}。STMB 的稀疏采样（$M{=}5, I{=}10$）与逐 token 门控是
+两项归纳偏置：既允许混叠所需的低频鉴别信号，又不容纳细粒度的过去动作痕迹。
+
+\paragraph{VLA 的视觉推理链路。}
+CoT-VLA~\cite{zhao2025cotvla} 把视觉思维链 token 注入 prompt。这增加了推理级上下文，
+但以序列长度为代价。我们的方法与此正交：STMB 在感知层补足上下文，可以叠加在
+CoT 式 prompt 之下。
+
+%=========================================================================
+\section{问题形式化：视觉观测混叠}
+\label{sec:problem}
+
+将一个语言条件下的操作任务建模为 POMDP
+$(\mathcal{S}, \mathcal{A}, \mathcal{O}, T, \Omega, \ell)$，其中 $\mathcal{S}$
+为潜在世界状态，$\mathcal{A}$ 为动作空间，$\mathcal{O}$ 为图像观测空间，$T$ 为转移
+核，$\Omega$ 为观测核，$\ell$ 为语言指令。专家示教诱导出联合分布
+$p(s, o, a \mid \ell)$。
+
+一个 \emph{Markov VLA 策略} $\pi_\theta(a \mid o, \ell)$ 由模仿学习在数据分布
+$\widehat{p}(o, a \mid \ell)$ 下训练得到，并且特别地 \emph{不} 利用轨迹历史。
+
+\begin{definition}[观测混叠对]
+\label{def:alias}
+设 $d(\cdot,\cdot)$ 为 VLM 特征空间上的度量；给定阈值 $\varepsilon > 0$
+与动作差阈值 $\delta > 0$，若两个训练样本 $(o_i, a_i, \ell)$ 与 $(o_j, a_j, \ell)$
+满足
+\[
+d(\phi(o_i), \phi(o_j)) \le \varepsilon \quad \text{且} \quad
+\|a_i - a_j\|_2 \ge \delta,
+\]
+则称其为一对 \emph{$(\varepsilon, \delta)$-混叠对}，其中 $\phi$ 为固定视觉编码器
+（例如冻结的 Qwen3-VL DeepStack 输出）。观测 $o_i$ 的 \emph{混叠分数} 定义为其
+$k$ 近邻中混叠伙伴的密度：
+\[
+\mathrm{Alias}_k(o_i) = \frac{1}{k}\sum_{j \in \mathrm{kNN}_k(o_i)}
+\mathbf{1}\!\left[\|a_i - a_j\|_2 \ge \delta\right].
+\]
+\end{definition}
+
+\begin{proposition}[混叠下的模式平均]
+\label{prop:modeavg}
+令 $R(\theta) = \mathbb{E}_{(o,a)}[\|\pi_\theta(o) - a\|_2^2]$ 为 $L_2$ 模仿目标。
+对任意 $o$，最优的 Markov 策略满足 $\pi^*(o) = \mathbb{E}_{a \sim p(a \mid o)}[a]$。
+若 $\mathrm{Alias}_k(o)$ 较高且条件动作分布多模，则 $\pi^*(o)$ 位于任务合法动作集合
+之外。
+\end{proposition}
+
+该命题把我们要针对的“静默失败”说清楚了：在高混叠观测上，贝叶斯最优的 Markov 策略
+被结构性地证明是差的。后文将推导打破这一 Markov 限制所需的最小上下文。
+
+\begin{remark}[什么样的记忆刚刚好够？]
+操作任务中出现的混叠对几乎总是由如下三类信号消歧：\emph{低频运动线索}（机械臂是在
+伸还是在缩？）、\emph{最近的接触事件}（夹爪刚刚闭合过吗？）以及 \emph{任务阶段}
+（我们处在 reach、transport 还是 release？）。它们的时间尺度都是子动作级的——秒级，
+而不是控制步级。因此“在任务尺度上稀疏采样”的记忆既是 \emph{必要的}（单帧不够）又是
+\emph{足够的}（稠密运动学不需要）。
+\end{remark}
+
+%=========================================================================
+\section{方法：短时记忆库 STMB}
+\label{sec:method}
+
+\subsection{设计原则}
+\label{sec:principles}
+
+从混叠形式化中直接读出五条约束，作为每项设计选择的动机：
+\begin{description}
+    \item[P1. 感知层介入。] 混叠是感知层的失败，修复应落在同一层，而非语言模型输入。
+    \item[P2. 特征级写入。] 消歧的产出应是被修正的当前帧表示，而不是额外的推理流。
+    \item[P3. 稀疏采样。] 任务相关时间常数是秒级；我们采样 $M{=}5$ 帧，间隔 $I{=}10$。
+    \item[P4. 逐 token 门控。] 混叠是局部的，融合必须是选择性的。
+    \item[P5. 绝对时间编码。] 不同任务阶段可能共享视觉模式；绝对时间戳防止混淆。
+\end{description}
+
+\subsection{架构}
+\label{sec:arch}
+
+记当前帧的 DeepStack 特征为
+$V \in \mathbb{R}^{B \times L \times V \times N \times D}$，其中 $B$ 为 batch，
+$L{=}3$ 为 DeepStack 层数，$V{=}2$ 为相机视角数，$N$ 为每视角 patch-merge 后 token
+数，$D$ 为特征维度。记忆张量为
+$M \in \mathbb{R}^{B \times L \times T \times V \times N \times D}$，$T$ 为历史步数。
+对每个 DeepStack 层 $\ell \in \{1, \dots, L\}$：
+\begin{align}
+\widetilde{V}_\ell &= V_\ell + \mathrm{PE}(t),                              \label{eq:pe}\\
+H_\ell            &= \mathrm{Attn}_\ell^{\mathrm{read}}\!\big(M_{\ell,-1},\;
+                      \mathrm{flatten}_T(M_\ell)\big),                      \label{eq:read}\\
+g_\ell            &= \sigma\!\big(W_\ell [H_\ell ;\; \widetilde{V}_\ell]\big), \label{eq:gate}\\
+V'_\ell           &= \mathrm{RMSNorm}_\ell\!\big(g_\ell \odot \widetilde{V}_\ell
+                      + (1-g_\ell) \odot H_\ell\big).                        \label{eq:fuse}
+\end{align}
+式~\eqref{eq:pe} 注入绝对时间步，对应 P5；式~\eqref{eq:read} 以最近一帧
+$M_{\ell,-1}$ 为 query、以展平后的历史为 key-value 做 slot-attention 读取，对应 P3；
+式~\eqref{eq:gate} 计算逐 token、逐视角、逐层的门，对应 P4；式~\eqref{eq:fuse}
+产出的融合特征替换掉 DeepStack 元组中的 $V_\ell$ 送入语言模型，对应 P1–P2。各层的
+$\{W_\ell, \mathrm{Attn}_\ell^{\mathrm{read}}, \mathrm{RMSNorm}_\ell\}$ 参数独立。
+
+\subsection{记忆构造}
+\label{sec:memconstr}
+
+\paragraph{训练侧。} 对轨迹步 $b$ 处的样本，按如下索引取帧：
+\[
+\mathrm{idx}_i = \max(0,\; b - i \cdot I),\qquad i \in \{M, M{-}1, \dots, 1\}.
+\]
+由旧到新排列，\emph{不包含}当前帧 $b$；当轨迹过短时回退到最早帧。
+
+\paragraph{在线滚动。} 推理阶段对在线 history buffer 应用\emph{同一}规则：当前帧不入
+记忆，填充用最早已缓存帧的重复。伪代码见算法~\ref{alg:mem}。
+
+\begin{algorithm}[h]
+\caption{滚动阶段在时刻 $b$ 的记忆构造}
+\label{alg:mem}
+\begin{algorithmic}[1]
+\Require 历史 buffer $H$（每条为各视角的列表）、间隔 $I$、记忆长度 $M$
+\Ensure 记忆帧 $\mathcal{M}$（由旧到新，不含当前帧）
+\State $b \gets |H| - 1$
+\For{$i = M, M-1, \dots, 1$}
+    \State $j \gets \max(0,\; b - i \cdot I)$
+    \State 将 $H[j]$ 追加到 $\mathcal{M}$
+\EndFor
+\State \Return $\mathcal{M}$
+\end{algorithmic}
+\end{algorithm}
+
+\subsection{与 VLM 的集成}
+记忆前向是 Qwen3-VL 模型前向中的一个条件分支块。记忆图像经过 \emph{同一} 视觉塔与
+DeepStack 投影得到和 $V$ 同形状的特征；这些特征按记忆张量 $M$ 重排后被
+式~\eqref{eq:pe}–\eqref{eq:fuse} 消费；得到的 $V'$ 替换原 DeepStack 元组交给语言模型。
+
+\subsection{动作头与训练目标}
+我们使用 OFT 风格的 $L_1$ 回归头：从最后一层 transformer 收集 $C$ 个动作占位 token
+的隐藏态，经 MLP 映射到归一化动作。STMB 启用与否，动作头及损失完全相同。
+
+%=========================================================================
+\section{诊断：四类静默失败模式}
+\label{sec:diagnostics}
+
+记忆增强 VLA 管线的接触面很大，记忆通路很容易在没有明显报错信号的情况下被误标定。我们
+列出遇到的四类失败模式及 STMB 如何规避它们。
+
+\paragraph{F1. 训练/测评帧索引不对齐。}
+训练端收集历史的索引集为 $\{b - M I, \dots, b - I\}$，\emph{不包含}当前帧。若在线
+rollout 错误地把当前帧追加到记忆末位，每个槽都相对训练分布偏移了一个间隔，最近记忆
+槽从 $b - I$ 变为 $b$。由于 slot-attention 的写查询恰是 $M_{\ell,-1}$，这一偏移正好
+破坏了模块训练时依赖的 query-key 关系。
+
+\paragraph{F2. 零图像填充。}
+历史不足 $M$ 帧时，朴素 rollout 会以全零 RGB 图补位。经过 RGB 归一化后，该图是一个
+范数极大的分布外输入；而训练端的填充是对最早真实帧的重复，二者分布完全不同。
+
+\paragraph{F3. 写查询自指。}
+若 F1 存在（当前帧出现在 $M_{\ell,-1}$ 上），slot-attention 的读取退化为“对着包含
+自身的集合做 attend”，门控被偏向恒等更新，记忆通路事实上被关掉。
+
+\paragraph{F4. 历史引发的因果混淆。}
+模仿学习的经典陷阱~\cite{dehaan2019causal}：历史与过去动作相关，策略会选择便宜的
+捷径。我们从结构上给出两条缓解：(a) 稀疏采样 $I{=}10$ 去除细粒度动作痕迹；
+(b) 逐 token 门控让记忆贡献局限在真正需要消歧的区域。
+
+\paragraph{一个最小补丁。}
+算法~\ref{alg:mem} 是同时消除 F1–F3 的最小代码改动：严格沿用训练端的约定。我们会把
+该补丁作为一项独立消融变量报告（\S\ref{sec:exp-ablation}）。
+
+%=========================================================================
+\section{实验}
+\label{sec:exp}
+
+\subsection{实验设置}
+
+\paragraph{主干。} Qwen3-VL（RynnBrain-CoP-8B~\cite{alibaba2025rynnbrain}），
+\texttt{bf16} + \texttt{flash\_attention\_2}。DeepStack 投影保持开启，STMB 作用在
+其输出上。
+
+\paragraph{动作头。} \texttt{L1RegressionActionHead}，\texttt{action\_dim}$=7$、
+\texttt{state\_dim}$=7$、动作 chunk $C{=}8$（future $=7$, past $=0$）。
+
+\paragraph{记忆超参。} $M{=}5$，$I{=}10$，$L{=}3$，$V{=}2$，特征维度与主干对齐。
+STMB 参数按 \S\ref{sec:arch} 随机初始化。
+
+\paragraph{数据。} LIBERO 转 LeRobot v2 / v3 格式；训练用合并后的 \texttt{libero\_all}
+切片；测评五大子套件 \textsc{spatial}、\textsc{object}、\textsc{goal}、
+\textsc{10}、\textsc{90}，每任务 50 条 rollout。
+
+\paragraph{优化。} 分模块学习率：
+\texttt{qwen\_vl\_interface}$=1\mathrm{e}{-}5$、
+\texttt{action\_model}$=1\mathrm{e}{-}4$；cosine 调度带 warmup；AdamW
+$(\beta{=}(0.9, 0.95))$；Accelerate + DeepSpeed ZeRO-2，梯度检查点开启，混合精度。
+
+\paragraph{计算。} \todo{GPU 卡时 / 硬件配置}。 \paragraph{随机种子。}
+\todo{种子数与 seed 列表}。
+
+\subsection{LIBERO 主结果}
+
+\begin{table}[h]
+\centering
+\caption{LIBERO 五套件成功率 (\%)。各行共享同一主干、动作头、数据管线与调度。
+“未对齐”表示 STMB \emph{未}应用 \S\ref{sec:diagnostics} 的记忆构造补丁；
+“已对齐”是本文完整方法。括号中箭头为相对无记忆基线的差值。}
+\label{tab:libero}
+\small
+\begin{tabular}{lcccccc}
+\toprule
+方法 & \textsc{spatial} & \textsc{object} & \textsc{goal} & \textsc{10} & \textsc{90} & 平均 \\
+\midrule
+无记忆基线（RynnBrain-OFT）            & \num & \num & \num & \num & \num & \num \\
+\quad + STMB（未对齐）                 & \num & \num & \num & \num & \num & \num \\
+\quad + STMB（已对齐，\textbf{本文}）  & \num & \num & \num & \num & \num & \num \\
+\midrule
+MemoryVLA~\cite{shi2025memoryvla}      & \num & \num & \num & \num & \num & \num \\
+PAM~\cite{pam2025}                     & \num & \num & \num & \num & \num & \num \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{按混叠分数分层的测评}
+\label{sec:exp-alias}
+
+我们用定义~\ref{def:alias} 计算每个 LIBERO 任务的任务级平均混叠分数（视觉编码器取
+冻结的 Qwen3-VL DeepStack 输出，$k{=}32$，动作阈值 $\delta$ 取全数据集动作差的
+$75\%$ 分位）。按低/中/高三档分桶，分别报告 STMB 相对无记忆基线的增益。
+
+\begin{table}[h]
+\centering
+\caption{按混叠分桶的增益。预期：低混叠持平，高混叠增益最大。}
+\label{tab:alias-bucket}
+\small
+\begin{tabular}{lcccc}
+\toprule
+混叠桶 & 任务数 & 基线 SR & +STMB SR & $\Delta$ \\
+\midrule
+低    & \num & \num & \num & \num \\
+中    & \num & \num & \num & \num \\
+高    & \num & \num & \num & \num \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{figure}[h]
+\centering
+\todo{散点图：横轴=任务混叠分数，纵轴=STMB 相对基线的增益，每点一个任务；叠加一条
+线性拟合并报告相关系数。}
+\caption{每任务混叠分数与 STMB 增益的相关性。}
+\label{fig:alias-scatter}
+\end{figure}
+
+\subsection{消融}
+\label{sec:exp-ablation}
+
+我们独立消融 P1–P5 的每一项及记忆构造补丁。
+
+\begin{table}[h]
+\centering
+\caption{LIBERO 平均成功率上的消融 (\%)。}
+\label{tab:ablations}
+\small
+\begin{tabular}{lc}
+\toprule
+变体 & 平均 SR \\
+\midrule
+STMB 完整版（本文）                                                 & \num \\
+(P3) $M{=}1$（单帧历史）                                             & \num \\
+(P3) $M{=}3$                                                         & \num \\
+(P3) $M{=}7$                                                         & \num \\
+(P3) 间隔 $I{=}5$                                                    & \num \\
+(P3) 间隔 $I{=}20$                                                   & \num \\
+(P4) 去除门控（残差融合 $V' = V + H$）                               & \num \\
+(P5) 去除时间位置编码                                                & \num \\
+单视角记忆（仅 agentview）                                           & \num \\
+单视角记忆（仅 wrist）                                               & \num \\
+未对齐记忆构造（复现 F1+F2+F3）                                      & \num \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{失败模式专项研究（F1–F4）}
+
+我们设计三项定向诊断实验：(i) 在测评时强行把当前帧塞入记忆（复现 F1/F3），(ii) 将
+最早帧重复填充换成零填充（复现 F2），(iii) 把间隔缩短为 $I{=}1$ 以制造因果混淆压力
+（F4）。\todo{结果表与讨论。}
+
+%=========================================================================
+\section{讨论}
+\label{sec:discussion}
+
+\paragraph{为什么是感知级而非推理级记忆？}
+混叠是观测上的属性，不是任务规划上的属性。用额外的记忆 token 在语言模型输入处修复它，
+是在 LM 序列长度上付代价去解决一个发生在它下一层的问题。STMB 直接在问题发生的通路
+里写入修正。
+
+\paragraph{与长时 VLA 的关系。}
+STMB 有意只做短时记忆。因果跨度超过 $M \cdot I$ 帧的任务不在本文范畴，它们更适合
+MemoryVLA、LoLA 等架构。STMB 与它们互补（参见 \S\ref{sec:related}）。
+
+\paragraph{局限性。}
+(i) STMB 目前绑定 DeepStack 风格 VLM，推广到单投影主干是未来工作；
+(ii) 混叠分数依赖一个固定视觉编码器，一个\emph{学习得到}的混叠判据可能更具预测力；
+(iii) 我们没有处理非视觉混叠（视觉相同但本体感觉不同），联合状态-图像记忆是一个自然
+扩展。
+
+%=========================================================================
+\section{结论}
+
+我们命名并形式化了 \emph{视觉观测混叠}——Markov VLA 策略的一种静默却普遍的失败模式。
+从它的定义反推得到五条具体设计约束，并将之实例化为 STMB：一个直接写入 VLM 主干
+DeepStack 视觉通路的特征级记忆适配器。配合四类静默失败模式的诊断清单与单算法级
+对齐补丁，整条管线可复现。LIBERO 上按混叠分层的测评 \todo{将增益与一个数据属性挂钩}，
+表明记忆增强 VLA 的正确提问或许不是“加多少历史”，而是“历史要消的是哪种歧义”。
+
+%=========================================================================
+\bibliographystyle{plain}
+\begin{thebibliography}{99}
+
+\bibitem{brohan2023rt2}
+A.~Brohan et al.
+\newblock RT-2: Vision-Language-Action Models Transfer Web Knowledge to Robotic Control.
+\newblock \emph{CoRL}, 2023.
+
+\bibitem{kim2024openvla}
+M.~Kim et al.
+\newblock OpenVLA: An Open-Source Vision-Language-Action Model.
+\newblock \emph{CoRL}, 2024.
+
+\bibitem{black2024pi0}
+K.~Black et al.
+\newblock $\pi_0$: A Vision-Language-Action Flow Model for General Robot Control.
+\newblock arXiv:2410.24164, 2024.
+
+\bibitem{bai2023qwen}
+J.~Bai et al.
+\newblock Qwen-VL: A Versatile Vision-Language Model for Understanding, Localization, Text Reading, and Beyond.
+\newblock arXiv:2308.12966, 2023.
+
+\bibitem{locatello2020slot}
+F.~Locatello et al.
+\newblock Object-Centric Learning with Slot Attention.
+\newblock \emph{NeurIPS}, 2020.
+
+\bibitem{dehaan2019causal}
+P.~de~Haan, D.~Jayaraman, S.~Levine.
+\newblock Causal Confusion in Imitation Learning.
+\newblock \emph{NeurIPS}, 2019.
+
+\bibitem{causalbot2025}
+Anonymous.
+\newblock Improving Generalization Ability of Robotic Imitation Learning by Resolving Causal Confusion in Observations.
+\newblock arXiv:2507.22380, 2025.
+
+\bibitem{shi2025memoryvla}
+S.~Shi et al.
+\newblock MemoryVLA: Perceptual-Cognitive Memory in Vision-Language-Action Models for Robotic Manipulation.
+\newblock arXiv:2508.19236, 2025.
+
+\bibitem{remem2025}
+Anonymous.
+\newblock Empowering Vision-Language-Action Model with Memory via Dual-Level Recurrent Queries.
+\newblock arXiv:2603.12942, 2025.
+
+\bibitem{pam2025}
+Anonymous.
+\newblock Resolving State Ambiguity in Robot Manipulation via Adaptive Working Memory Recoding.
+\newblock arXiv:2512.24638, 2025.
+
+\bibitem{lola2025}
+Anonymous.
+\newblock LoLA: Long Horizon Latent Action Learning for General Robot Manipulation.
+\newblock arXiv:2512.20166, 2025.
+
+\bibitem{zhao2025cotvla}
+Y.~Zhao et al.
+\newblock CoT-VLA: Visual Chain-of-Thought Reasoning for Vision-Language-Action Models.
+\newblock \emph{CVPR}, 2025.
+
+\bibitem{alibaba2025rynnbrain}
+Alibaba DAMO Academy.
+\newblock RynnBrain: A Vision-Language Model Family for Embodied Agents.
+\newblock Technical Report, 2025.
+
+\end{thebibliography}
+
+\end{document}

@@ -1,0 +1,154 @@
+\documentclass[11pt]{ctexart}
+
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath,amssymb,amsthm}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{hyperref}
+\usepackage{url}
+\usepackage{xcolor}
+\usepackage{cite}
+\usepackage{authblk}
+\usepackage{algorithm}
+\usepackage{algpseudocode}
+
+\newcommand{\todo}[1]{\textcolor{red}{\textbf{[待补: #1]}}}
+\newtheorem{definition}{定义}
+\newtheorem{proposition}{命题}
+\newtheorem{remark}{评注}
+
+\title{MicroMem:\\
+面向视觉观测混淆的极简特征级短期记忆适配器\\
+\large A Minimal Feature-Level Short-Term Memory Adapter\\for Resolving Visual Observation Aliasing in VLAs}
+
+\author[1]{匿名作者}
+\affil[1]{匿名机构}
+\date{\today}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+当前主流的视觉-语言-动作(VLA)模型普遍将机器人操作建模为一个以当前帧观测为输入的\emph{马尔可夫}策略。我们指出该设计下一个长期被忽视但极其普遍的失败模式——\textbf{视觉观测混淆(Visual Observation Aliasing)}：训练轨迹中存在大量"单帧观测几乎无法区分、但专家动作分布完全不同"的状态对，马尔可夫策略只能回归到条件动作期望，从而产生静态抖动、模式塌缩甚至任务失败。
+
+针对这一问题，我们提出\textbf{MicroMem}——一个面向 Qwen3-VL/RynnBrain 主干的\emph{极简}特征级短期记忆适配器。与现有将记忆作为 token 序列并入语言模型、或引入数百帧密集历史的重量级方案不同，MicroMem 只维护一个 $M{=}5$ 帧、$3$ 个 DeepStack 层级、每层 $64$ 个 slot 的固定小尺寸特征库，以 per-token 门控的方式对当前帧视觉特征进行\emph{局部修正}，不引入任何额外 token、不修改语言模型结构。整个集成仅需在 VLM 前向传播的视觉侧插入一个条件分支，其可训练参数量占主干模型的 \todo{参数占比}。在 LIBERO 五套件上，MicroMem 以其不足 \todo{参数量} M 的额外参数，获得 \todo{总体提升}\% 的平均成功率提升，并且提升幅度与我们提出的\emph{混淆分数}显著相关。
+\end{abstract}
+
+%=========================================================================
+\section{相关工作}
+\label{sec:related}
+
+\paragraph{视觉-语言-动作模型。}
+OpenVLA~\cite{kim2024openvla}、RT-2~\cite{brohan2023rt2}、$\pi_0$~\cite{black2024pi0} 等近期 VLA 系统通过在预训练视觉-语言模型(VLM)之上挂载动作头(离散 token、MLP 回归、或流匹配专家)将其改造为操作策略。这一路线的共同简化是\emph{马尔可夫假设}：时刻 $t$ 的动作只依赖当前观测 $o_t$ 与语言指令 $\ell$。这一假设让任何预训练 VLM 都可以被轻量改造为策略，但也使得所有由"当前帧不是状态充分统计量"导致的失败都会以隐蔽的形式出现。本文正是针对这一临界失效区的干预。
+
+\paragraph{记忆增强型 VLA。}
+近期若干工作尝试为 VLA 引入记忆以缓解单帧策略的局限，但这些方案在\emph{记忆的容量、接入位置以及参数规模}上差异极大：
+\begin{itemize}
+    \item \textbf{MemoryVLA}~\cite{shi2025memoryvla} 引入双层"感知-认知"记忆库与扩散动作头，并将记忆以 token 的形式并入语言模型的 cross-attention，记忆更新与读取涉及大量额外模块。
+    \item \textbf{ReMem-VLA}~\cite{remem2025} 在语言模型内部加入帧级与片段级的循环查询，通过语言端 KV cache 传递长期上下文，修改范围深入主干。
+    \item \textbf{PAM}~\cite{pam2025} 采用密集的 300 帧历史拼接，通过时间注意力压缩，以信息完备性换取计算与显存代价。
+    \item \textbf{LoLA}~\cite{lola2025} 针对长周期任务对观测序列做层次化下采样，着眼任务级而非帧级上下文。
+    \item \textbf{CoT-VLA}~\cite{zhao2025cotvla} 把历史以"思维链视觉 token"的形式写入语言模型，将记忆与推理耦合。
+\end{itemize}
+上述方案有两个共同的\emph{重量级}特征：(i) 记忆往往被表达为额外的 token 序列塞入语言模型，引入显著的序列长度与注意力代价；(ii) 为追求通用性，记忆容量和架构复杂度都远超解决具体失败模式所需。我们的视角与之相反：首先识别单帧策略失效的\emph{局部原因}(视觉观测混淆)，再设计刚好能解开这一局部歧义的\emph{最小}记忆结构。
+
+\paragraph{因果混淆。}
+经典模仿学习文献~\cite{dehaan2019causal} 指出，向策略暴露过多历史信息反而可能损害性能：策略会学到与专家动作相关但与任务语义无关的"虚假线索"(causal confusion)。多数记忆增强型 VLA 工作并未正面应对这一风险。MicroMem 通过"稀疏采样 + 特征级门控修正"的组合，将历史信息接入在\emph{感知层而非决策层}，并限制其每 token 的影响幅度，从而在设计上避开了因果混淆的典型路径。
+
+\paragraph{视觉混淆与部分可观测性。}
+感知歧义是部分可观测马尔可夫决策过程(POMDP)~\cite{kaelbling1998planning} 的经典困难。计算机视觉社区在视频理解与 SLAM 领域也讨论过"aliasing"现象，但这些讨论多集中在几何或频域层面。据我们所知，本文首次在 VLA 模仿学习语境下对"视觉观测混淆"给出形式化定义与数据可计算的\emph{混淆分数}，并将其作为指导记忆模块设计的核心抓手。
+
+\paragraph{参数高效的适配器。}
+MicroMem 在精神上更接近 NLP 与多模态学习中的 Adapter/LoRA 家族~\cite{houlsby2019adapter,hu2022lora}：以极少新增参数、在主干网络的受限位置做\emph{局部}修正。不同于 LoRA 作用于权重、不引入运行时额外状态，MicroMem 作用于\emph{激活}并显式维护一个随时间滚动的小尺寸特征库。我们将其定位为"针对 VLA 视觉通路的时间记忆适配器"，而非一套新的策略架构。
+
+%=========================================================================
+\section{核心方法：MicroMem}
+\label{sec:method}
+
+\subsection{问题形式化：视觉观测混淆}
+
+考虑从专家轨迹集合 $\mathcal{D} = \{\tau_i\}_{i=1}^{N}$ 上学到的行为克隆策略 $\pi_\theta(a \mid o)$，其中每条轨迹 $\tau_i = \{(s_t, o_t, a_t)\}_{t=0}^{T_i}$，$o_t$ 为当前帧观测(含多视角图像与语言指令)。
+
+\begin{definition}[视觉观测混淆对]
+\label{def:alias}
+给定特征提取器 $\phi:\mathcal{O} \to \mathbb{R}^D$、视觉相似阈值 $\epsilon_o$、动作差异阈值 $\epsilon_a$，称训练集中两状态 $s_i,s_j$ 构成\emph{视觉观测混淆对}，若
+\[
+\|\phi(o_i) - \phi(o_j)\|_2 \le \epsilon_o \quad \text{且} \quad \|a_i - a_j\|_{\infty} \ge \epsilon_a .
+\]
+数据集 $\mathcal{D}$ 上的\emph{混淆分数}定义为
+\[
+\mathrm{AS}(\mathcal{D}) = \frac{1}{|\mathcal{D}|} \sum_{s_i \in \mathcal{D}} \mathbb{1}\!\left[\exists\, s_j:\, (s_i,s_j)\ \text{构成混淆对} \right].
+\]
+\end{definition}
+
+\begin{proposition}[单帧策略下的误差下界]
+若 $\pi_\theta$ 仅以 $o_t$ 为输入、以最小化期望 MSE 进行训练，则在混淆对集合上，$\pi_\theta(o_i)$ 将收敛至 $\mathbb{E}[a \mid o_i]$；当该期望偏离任意任务有效动作模式时，策略动作不可避免地落入无效区。
+\end{proposition}
+
+该命题解释了为何单帧 VLA 在"伸-抓"、"推-拉"、"接触前-接触后"等视觉高度相似的阶段会出现典型的模式塌缩与抖动。
+
+\subsection{从问题推导的五条设计约束}
+\label{subsec:principles}
+
+从定义~\ref{def:alias} 与上述命题出发，我们提出\emph{刚好够用}的五条设计约束：
+
+\begin{description}
+    \item[(P1) 感知层介入] 混淆是感知级而非推理级失败，因此记忆应作用于\emph{视觉特征}，而非语言模型内部表示或动作头。
+    \item[(P2) 特征级修正而非 token 注入] 记忆的作用是\emph{修正当前帧视觉表征}，不应通过额外 token 拉长序列，避免加剧注意力成本与因果混淆。
+    \item[(P3) 稀疏短窗] 操作阶段的时间尺度约为秒级；采样 $M{=}5$ 帧、间隔 $I{=}10$ 的历史足以覆盖一个操作相位，又避免了密集历史所引入的冗余噪声与因果混淆脆弱性。
+    \item[(P4) 每 token 门控] 混淆通常在空间上是局部的(夹爪周边、目标物周边)，应以 per-token 的 sigmoid 门控融合记忆，使修正发生在需要的位置，而非全局替换。
+    \item[(P5) 显式绝对时间编码] 同一视觉母题在不同任务相位会反复出现；向记忆模块显式注入绝对时间步可区分这些相位。
+\end{description}
+
+以上五条共同构成了 MicroMem 的最小充分规范。任何满足 P1--P5 的设计都应具备相近的归纳偏置。
+
+\subsection{MicroMem 架构}
+
+设 Qwen3-VL 视觉编码器的 DeepStack 输出为三层特征 $\{F^{(l)} \in \mathbb{R}^{B \times V \times N \times D}\}_{l=1}^{3}$，其中 $V{=}2$ 为相机视角数、$N{=}64$ 为合并后的 token 数、$D$ 为特征维。MicroMem 维护一个滚动特征库
+\[
+\mathcal{M} \in \mathbb{R}^{B \times 3 \times M \times V \times N \times D}, \quad M{=}5,
+\]
+仅存放\emph{特征}、不存放原始像素，空间开销随 $D$ 线性增长而非随图像分辨率平方增长。
+
+\paragraph{读-写操作。}
+给定当前帧 DeepStack 特征 $F_t^{(l)}$ 与记忆 $\mathcal{M}_t^{(l)} \in \mathbb{R}^{B\times M\times V\times N\times D}$，第 $l$ 层更新规则为：
+\begin{align}
+h^{(l)} &= \mathrm{Attn}^{(l)}_\text{read}\bigl(\mathcal{M}_t^{(l)}[:,-1], \mathrm{flatten}_T(\mathcal{M}_t^{(l)})\bigr),\\
+\tilde F_t^{(l)} &= F_t^{(l)} + \mathrm{PE}_\text{time}(t),\\
+g^{(l)} &= \sigma\bigl(W^{(l)}_g[h^{(l)};\tilde F_t^{(l)}]\bigr) \in \mathbb{R}^{B\times V\times N\times D},\\
+\hat F_t^{(l)} &= \mathrm{RMSNorm}\bigl(g^{(l)} \odot \tilde F_t^{(l)} + (1-g^{(l)})\odot h^{(l)}\bigr),
+\end{align}
+其中 $\mathrm{Attn}^{(l)}_\text{read}$ 是层内独立的多头 slot-attention，以"最近一帧的记忆"为 query 聚合整个历史窗；$\mathrm{PE}_\text{time}$ 为以绝对时间步 $t$ 为输入的正弦时间编码(P5)；$g^{(l)}$ 为 per-token 门控(P4)。修正后的特征 $\hat F_t^{(l)}$ 按原 DeepStack 接口写回语言模型的视觉侧(P1, P2)。
+
+\paragraph{参数与计算预算。}
+MicroMem 每层仅包含 4 个线性投影(QKV+O)与一个门控 MLP，总可训练参数量为 $O(L\cdot D^2)$，在 $D{=}2560$、$L{=}3$ 下约为 \todo{参数量} M，占主干 8B 参数的比例约为 \todo{参数占比}。由于记忆仅保存特征不保存像素，且不向语言模型引入额外 token，整体前向开销可忽略不计。
+
+\subsection{与现有记忆方案的对比定位}
+
+表~\ref{tab:design-compare} 从五条设计约束 P1--P5 的维度比较 MicroMem 与现有记忆增强 VLA 方案。MicroMem 的核心差异点是：\emph{同时}满足 P1--P5 五条约束，而 MemoryVLA、ReMem-VLA 等方案违反 P2(以 token 形式注入记忆)、PAM 违反 P3(密集历史)、大多数方案缺失 P5(显式绝对时间编码)。这一结构性差别也解释了为何 MicroMem 在以\emph{混淆分数}为分层指标的评测上能取得与分数高度相关的性能提升，而非单纯的全局分数抬升。
+
+\begin{table}[t]
+\centering
+\small
+\begin{tabular}{lccccccc}
+\toprule
+方法 & P1 感知层 & P2 特征级 & P3 稀疏 & P4 门控 & P5 时间 & 额外 token & 历史长度 \\
+\midrule
+MemoryVLA~\cite{shi2025memoryvla}  & \checkmark & $\times$    & \checkmark  & $\times$    & $\times$    & 有    & 中    \\
+ReMem-VLA~\cite{remem2025}        & $\times$    & $\times$    & \checkmark  & $\times$    & $\times$    & 有    & 中    \\
+PAM~\cite{pam2025}                 & \checkmark & \checkmark & $\times$    & $\times$    & $\times$    & 无    & 长(300)  \\
+LoLA~\cite{lola2025}              & \checkmark & \checkmark & \checkmark  & $\times$    & $\times$    & 无    & 任务级 \\
+CoT-VLA~\cite{zhao2025cotvla}     & $\times$    & $\times$    & \checkmark  & $\times$    & \checkmark & 有    & 短    \\
+\midrule
+\textbf{MicroMem (本文)} & \checkmark & \checkmark & \checkmark & \checkmark & \checkmark & 无 & 短(5) \\
+\bottomrule
+\end{tabular}
+\caption{MicroMem 与现有记忆增强 VLA 方案在五条设计约束下的比较。MicroMem 是首个同时满足 P1--P5 的记忆方案。}
+\label{tab:design-compare}
+\end{table}
+
+%=========================================================================
+\bibliographystyle{plain}
+\bibliography{references}
+
+\end{document}

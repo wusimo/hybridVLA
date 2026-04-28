@@ -73,11 +73,14 @@ datasets:
     obs: ["image_0"]
     video_backend: torchvision_av
     num_workers: 0  # 设置为0以避免分布式训练中的多进程死锁问题
+    pin_memory: false
+    persistent_workers: false
+    prefetch_factor: null
 
 
 trainer:
   epochs: 100
-  max_train_steps: 30000
+  max_train_steps: 100000
   num_warmup_steps: 5000
   save_interval: 5000
   eval_interval: 100
@@ -97,7 +100,7 @@ trainer:
   weight_decay: 0.0
   logging_frequency: 10
   gradient_clipping: 1.0
-  gradient_accumulation_steps: 1
+  gradient_accumulation_steps: 8
 
   optimizer:
     name: AdamW

@@ -62,7 +62,7 @@ bash eval.sh blocks_ranking_size demo_clean my_test_v1 0 0
 bash eval.sh place_bread_basket demo_clean my_test_v1 0 0
 
 
-报错：
+# 报错：
 怀疑是显卡架构与pytorch版本冲突 cuda编译时出错
 
 

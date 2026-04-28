@@ -9,10 +9,8 @@ from pathlib import Path
 import requests
 import time
 
-import cv2 as cv
 import imageio
 import numpy as np
-from PIL import Image
 import tqdm
 import tyro
 from libero.libero import benchmark, get_libero_path
@@ -59,7 +57,8 @@ class Args:
     max_memory: int = 5
 
     interval: int = 10
-    
+
+
 def eval_libero(args: Args) -> None:
     logging.info(f"Arguments: {json.dumps(dataclasses.asdict(args), indent=4)}")
 
@@ -113,7 +112,6 @@ def eval_libero(args: Args) -> None:
         task_episodes, task_successes = 0, 0
         for episode_idx in tqdm.tqdm(range(args.num_trials_per_task)):
             logging.info(f"\nTask: {task_description}")
-
             # Reset environment
             client_model.reset(task_description=task_description)  # Reset the client connection
             env.reset()
@@ -125,11 +123,11 @@ def eval_libero(args: Args) -> None:
             t = 0
             replay_images = []
             full_actions = []
+            ZERO_IMG = np.zeros((256, 256, 3), dtype=np.uint8)
             history_images = []
 
             logging.info(f"Starting episode {task_episodes + 1}...")
             step = 0
-            ZERO_IMG = np.zeros((256, 256, 3), dtype=np.uint8)
             
             # full_actions = np.load("./debug/action.npy")
             
@@ -152,7 +150,7 @@ def eval_libero(args: Args) -> None:
                 memory_images = reversed_history[:args.max_memory][::-1]  # 限制数量，再反转
                 if len(memory_images) < args.max_memory:
                     needed_zero_images = args.max_memory - len(memory_images)
-                    zero_imgs_list = [[ZERO_IMG, ZERO_IMG] for _ in range(needed_zero_images)]
+                    zero_imgs_list = [[ZERO_IMG,ZERO_IMG] for _ in range(needed_zero_images)]
                     memory_images = zero_imgs_list + memory_images
                 # Save preprocessed image for replay video
                 replay_images.append(img)
@@ -212,11 +210,9 @@ def eval_libero(args: Args) -> None:
                     delta_action = np.concatenate([world_vector_delta, rotation_delta, gripper], axis=0)
 
                 full_actions.append(delta_action)
-
-                # Debug: print action values for first 3 steps of each episode
-                # if step < 3:
-                #     logging.info(f"  [DEBUG] step={step} action={np.round(delta_action, 4).tolist()}")
-
+                
+                # __import__("ipdb").set_trace()
+                # see ../robosuite/controllers/controller_factory.py
                 obs, reward, done, info = env.step(delta_action.tolist())
                 if done:
                     task_successes += 1
@@ -311,6 +307,6 @@ def start_debugpy_once():
     start_debugpy_once._started = True
 
 if __name__ == "__main__":
-    if os.getenv("DEBUG", False):
-        start_debugpy_once()
+    # if os.getenv("DEBUG", False):
+    #     start_debugpy_once()
     tyro.cli(eval_libero)

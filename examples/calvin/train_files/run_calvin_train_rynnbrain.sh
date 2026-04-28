@@ -1,6 +1,5 @@
 # export CUDA_VISIBLE_DEVICES=0
 export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
-
 # export NCCL_SOCKET_IFNAME=bond0
 # export NCCL_IB_HCA=mlx5_2,mlx5_3
 
@@ -9,6 +8,8 @@ export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
 # export NCCL_ASYNC_ERROR_HANDLING=1
 # export NCCL_TIMEOUT=10000  # timeout set to 1 hour (unit: seconds)
 # export NCCL_SOCKET_TIMEOUT_MS=360000
+export TMPDIR=${TMPDIR:-/tmp}
+ulimit -n 65535 2>/dev/null || true
 ###########################################################################################
 # === Please modify the following paths according to your environment ===
 Framework_name=RynnBrainOFT
@@ -18,10 +19,10 @@ base_vlm=/home/user01/jiangnan/starVLA/playground/Pretrained_models/RynnBrain-Co
 # config_yaml=./examples/calvin/train_files/starvla_train_calvin.yaml
 config_yaml=/home/user01/jiangnan/starVLA/examples/calvin/train_files/starvla_train_calvin_rynnbrain.yaml
 DIT_TYPE="DiT-B"
-calvin_data_root=playground/Datasets/calvin
-data_mix=calvin_task_D_D
+calvin_data_root=/mnt/data/jiangnan/lerobot
+data_mix=calvin_task_ABC_D
 run_root_dir=./results/Checkpoints
-run_id=0118_starvla_rynnbrain_calvin_task_D_D_memory
+run_id=starvla_rynnbrain_calvin_task_ABC_D_nomemory
 export action_input_dim=2048
 # === End of environment variable configuration ===
 ###########################################################################################
@@ -41,24 +42,28 @@ accelerate launch \
   --config_yaml ${config_yaml} \
   --framework.name ${Framework_name} \
   --framework.qwenvl.base_vlm ${base_vlm} \
-  --framework.qwenvl.memory True \
+  --framework.qwenvl.memory False \
   --datasets.vla_data.data_root_dir ${calvin_data_root}\
   --datasets.vla_data.data_mix ${data_mix} \
   --datasets.vla_data.per_device_batch_size 4 \
-  --datasets.vla_data.memory True \
-  --datasets.vla_data.max_step 5 \
-  --datasets.vla_data.interval 10 \
+  --datasets.vla_data.memory False \
   --datasets.vla_data.video_backend torchvision_av \
   --trainer.freeze_modules ${freeze_module_list} \
-  --trainer.max_train_steps 30000 \
-  --trainer.save_interval 10000 \
-  --trainer.logging_frequency 100 \
+  --trainer.max_train_steps 100000 \
+  --trainer.save_interval 5000 \
+  --trainer.logging_frequency 10 \
   --trainer.eval_interval 100 \
+  --trainer.is_resume True \
+  --trainer.gradient_accumulation_steps 8 \
+  --trainer.learning_rate.base 1.0e-05 \
+  --trainer.learning_rate.qwen_vl_interface 5.0e-06 \
+  --trainer.learning_rate.action_model 5.0e-05 \
   --run_root_dir ${run_root_dir} \
   --run_id ${run_id} \
-  --wandb_project starVLA_Calvin \
-  --wandb_entity your_wandb_entity \
-  # --is_debug True
+  --wandb_project Calvin_ABCD_RynnBrain \
+  --wandb_entity rorschachkelvin-luxi-tech
+
+#  --is_debug True
 
 
 

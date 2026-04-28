@@ -75,7 +75,7 @@ class RynnBrain_OFT(baseframework):
         actions = [ex["action"] for ex in examples]             # [B, T, A]
         if self.memory_mode:
             memorys = [ex["memory"] for ex in examples]
-        steps = [ex["step"] for ex in examples]
+            steps = [ex["step"] for ex in examples]
 
         # step 0: append action placeholders
         action_tokens = self.action_token * self.chunk_len
@@ -126,8 +126,42 @@ class RynnBrain_OFT(baseframework):
         batch_images = [to_pil_preserve(ex["image"]) for ex in examples]
         instructions = [ex["lang"] for ex in examples]
         if self.memory_mode:
-            memorys = [ex["memory"] for ex in examples]
-        steps = [ex["step"] for ex in examples]
+            # Memory is shipped over msgpack as numpy (read-only, buffer-backed).
+            # Convert to PIL to (i) match the training path where `_pack_sample`
+            # stores PIL frames, (ii) copy the data so the HF image processor
+            # does not see a non-writable array.
+            memorys = [to_pil_preserve(ex["memory"]) for ex in examples]
+            steps = [ex["step"] for ex in examples]
+
+            # ---- [MEMORY PROBE] prints first N eval calls then a periodic sample ----
+            if not hasattr(self, "_mem_probe_count"):
+                self._mem_probe_count = 0
+            if self._mem_probe_count < 3 or self._mem_probe_count % 50 == 0:
+                try:
+                    b = len(memorys)
+                    outer = len(memorys[0])
+                    inner = len(memorys[0][0])
+                    leaf = memorys[0][0][0]
+                    leaf_info = (
+                        f"type={type(leaf).__name__} size={getattr(leaf, 'size', None)} "
+                        f"mode={getattr(leaf, 'mode', None)}"
+                    )
+                    main_leaf = batch_images[0][0]
+                    main_info = (
+                        f"type={type(main_leaf).__name__} size={getattr(main_leaf, 'size', None)} "
+                        f"mode={getattr(main_leaf, 'mode', None)}"
+                    )
+                    print(
+                        f"[MEM PROBE #{self._mem_probe_count}] "
+                        f"batch={b} | memory[{b}][{outer}][{inner}] leaf: {leaf_info} | "
+                        f"main_image[{len(batch_images[0])}] leaf: {main_info} | "
+                        f"steps={steps}",
+                        flush=True,
+                    )
+                except Exception as e:
+                    print(f"[MEM PROBE #{self._mem_probe_count}] structure print failed: {e!r}", flush=True)
+            self._mem_probe_count += 1
+            # ---- [/MEMORY PROBE] ----
 
         train_obs_image_size = getattr(self.config.datasets.vla_data, "image_size", None)
         if train_obs_image_size:
@@ -145,6 +179,24 @@ class RynnBrain_OFT(baseframework):
             rb_inputs = self.vlm_interface.build_rynnbrain_inputs_with_memorys(
                 images=batch_images, instructions=instructions, memorys=memorys, steps=steps
             )
+
+            # ---- [MEMORY PROBE] post-processor shapes actually entering the model ----
+            if self._mem_probe_count <= 3 or self._mem_probe_count % 50 == 1:
+                try:
+                    pv_mem = rb_inputs.get("memorys", None)
+                    pv_main = rb_inputs.get("pixel_values", None)
+                    print(
+                        f"[MEM PROBE #{self._mem_probe_count - 1}] post-processor: "
+                        f"pixel_values(main)={tuple(pv_main.shape) if pv_main is not None else None}, "
+                        f"memorys={tuple(pv_mem.shape) if pv_mem is not None else None}, "
+                        f"memorys_length={rb_inputs.get('memorys_length')}, "
+                        f"steps_field={rb_inputs.get('steps')}, "
+                        f"input_ids={tuple(rb_inputs['input_ids'].shape)}",
+                        flush=True,
+                    )
+                except Exception as e:
+                    print(f"[MEM PROBE post] failed: {e!r}", flush=True)
+            # ---- [/MEMORY PROBE] ----
 
         with torch.autocast("cuda", dtype=torch.bfloat16):
             outputs = self.vlm_interface(

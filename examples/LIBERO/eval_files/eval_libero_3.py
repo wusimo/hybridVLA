@@ -59,7 +59,7 @@ class Args:
     max_memory: int = 5
 
     interval: int = 10
-    
+
 def eval_libero(args: Args) -> None:
     logging.info(f"Arguments: {json.dumps(dataclasses.asdict(args), indent=4)}")
 
@@ -73,7 +73,7 @@ def eval_libero(args: Args) -> None:
     logging.info(f"Task suite: {args.task_suite_name}")
 
     # args.video_out_path = f"{date_base}+{args.job_name}"
-    
+
     pathlib.Path(args.video_out_path).mkdir(parents=True, exist_ok=True)
 
     if args.task_suite_name == "libero_spatial":
@@ -125,14 +125,16 @@ def eval_libero(args: Args) -> None:
             t = 0
             replay_images = []
             full_actions = []
+            # history_images[k] 对应 policy 的第 k 次决策时所观察到的画面（不含当前帧；
+            # 当前帧采样后再 append，保证 memory 与训练侧 i in [1, max_memory] 的 t-i*interval 严格一致）。
             history_images = []
 
             logging.info(f"Starting episode {task_episodes + 1}...")
             step = 0
             ZERO_IMG = np.zeros((256, 256, 3), dtype=np.uint8)
-            
+
             # full_actions = np.load("./debug/action.npy")
-            
+
             while t < max_steps + args.num_steps_wait:
                 # try:
                 # IMPORTANT: Do nothing for the first few timesteps because the simulator drops objects
@@ -147,13 +149,19 @@ def eval_libero(args: Args) -> None:
                 wrist_img = np.ascontiguousarray(
                     obs["robot0_eye_in_hand_image"][::-1, ::-1]
                 )
-                history_images.append([img, wrist_img])   # memory_image[-1]是当前画面
-                reversed_history = history_images[::-1][::args.interval] # 反转后正着采样
-                memory_images = reversed_history[:args.max_memory][::-1]  # 限制数量，再反转
-                if len(memory_images) < args.max_memory:
-                    needed_zero_images = args.max_memory - len(memory_images)
-                    zero_imgs_list = [[ZERO_IMG, ZERO_IMG] for _ in range(needed_zero_images)]
-                    memory_images = zero_imgs_list + memory_images
+
+                # === 与训练侧严格对齐的 memory 构造 ===
+                # 训练侧 (datasets.py): for i in range(1, max_step+1): hist=base-i*interval
+                # 顺序: memory[0]=最近过去(t-interval), memory[-1]=最旧(t-max*interval)
+                # 不含当前帧；越界用零帧填充（落在最旧位置=list 尾部）。
+                memory_images = []
+                for i in range(1, args.max_memory + 1):
+                    hist_t = step - i * args.interval
+                    if hist_t < 0 or hist_t >= len(history_images):
+                        memory_images.append([ZERO_IMG, ZERO_IMG])
+                    else:
+                        memory_images.append(history_images[hist_t])
+
                 # Save preprocessed image for replay video
                 replay_images.append(img)
 
@@ -165,7 +173,7 @@ def eval_libero(args: Args) -> None:
                     )
                 )
 
-                observation = { # 
+                observation = { #
                     "observation.primary": np.expand_dims(
                         img, axis=0
                     ),  # (H, W, C), dtype=unit8, range(0-255)
@@ -181,20 +189,20 @@ def eval_libero(args: Args) -> None:
                     "image": [observation["observation.primary"][0], observation["observation.wrist_image"][0]],
                     "lang": observation["instruction"][0],
                     "memory": memory_images,
-                    "step" : t
+                    "step" : step,
                 }
 
-                
+
                 start_time = time.time()
-                
-                response = client_model.step(example=example_dict, step=step) 
-                
+
+                response = client_model.step(example=example_dict, step=step)
+
                 end_time = time.time()
                 # print(f"time: {end_time - start_time}")
-                
-                # # 
+
+                # #
                 raw_action = response["raw_action"]
-                
+
                 world_vector_delta = np.asarray(raw_action.get("world_vector"), dtype=np.float32).reshape(-1)
                 rotation_delta = np.asarray(raw_action.get("rotation_delta"), dtype=np.float32).reshape(-1)
                 open_gripper = np.asarray(raw_action.get("open_gripper"), dtype=np.float32).reshape(-1)
@@ -213,9 +221,10 @@ def eval_libero(args: Args) -> None:
 
                 full_actions.append(delta_action)
 
-                # Debug: print action values for first 3 steps of each episode
-                # if step < 3:
-                #     logging.info(f"  [DEBUG] step={step} action={np.round(delta_action, 4).tolist()}")
+                # 当前帧已被消费，把它写入 history 供后续 step 作为"过去帧"使用。
+                # 这样下一次循环时 history_images[step] 就是本次 step 的画面，
+                # 取 history_images[step+1 - i*interval] 即 t-i*interval 的过去观测。
+                history_images.append([img, wrist_img])
 
                 obs, reward, done, info = env.step(delta_action.tolist())
                 if done:
@@ -237,10 +246,10 @@ def eval_libero(args: Args) -> None:
                 [np.asarray(x) for x in replay_images],
                 fps=10,
             )
-            
+
             full_actions = np.stack(full_actions)
             # np.save(pathlib.Path(args.video_out_path) / f"rollout_{task_segment}_episode{episode_idx}_{suffix}.npy", full_actions)
-            
+
             # print(pathlib.Path(args.video_out_path) / f"rollout_{task_segment}_episode{episode_idx}_{suffix}.mp4")
             # Log current results
             logging.info(f"Success: {done}")

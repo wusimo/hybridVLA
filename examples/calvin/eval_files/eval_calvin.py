@@ -37,6 +37,7 @@ from termcolor import colored
 from tqdm import tqdm
 import tyro
 from examples.LIBERO.eval_files.model2libero_interface import ModelClient
+from starVLA.model.tools import read_mode_config
 
 # # Add Calvin to path
 # CALVIN_ROOT = Path(__file__).resolve().parents[2] / "third_party" / "calvin"
@@ -110,10 +111,18 @@ class CalvinPolicyClient:
         self.resize_size = resize_size
         self.replan_steps = replan_steps
         self.step_count = 0
-        
+        model_config, _ = read_mode_config(pretrained_path)
+        qwenvl = model_config.get("framework", {}).get("qwenvl", {}) or {}
+        vla = model_config.get("datasets", {}).get("vla_data", {}) or {}
+        self.use_memory = bool(qwenvl.get("memory", False))
+        self.max_step = int(vla.get("max_step", 5))
+        self.interval = int(vla.get("interval", 10))
+        self.frame_history = []
+
     def reset(self):
         """Reset action plan buffer."""
         self.step_count = 0
+        self.frame_history = []
         
     def step(self, obs: dict, lang_annotation: str) -> np.ndarray:
         """
@@ -142,11 +151,27 @@ class CalvinPolicyClient:
         )
         
         # Prepare input for policy server (aligned with eval_libero)
+        t = self.step_count
         example = {
             "image": [image, wrist_image],
             "lang": lang_annotation,
         }
-        
+        # new: memory sampling aligned with LIBERO  添加memory模块
+        if self.use_memory:
+            zero = np.zeros((self.resize_size, self.resize_size, 3), dtype=np.uint8)
+            # Keep CALVIN memory sampling aligned with LIBERO: include the
+            # current preprocessed frame in history, then sample backwards
+            # every `interval` steps, cap at `max_step`, and left-pad zeros.
+            self.frame_history.append([image.copy(), wrist_image.copy()])
+            reversed_history = self.frame_history[::-1][::self.interval]
+            memory_images = reversed_history[:self.max_step][::-1]
+            if len(memory_images) < self.max_step:
+                needed_zero_images = self.max_step - len(memory_images)
+                zero_imgs_list = [[zero.copy(), zero.copy()] for _ in range(needed_zero_images)]
+                memory_images = zero_imgs_list + memory_images
+            example["memory"] = memory_images
+            example["step"] = t
+
         # Query model
         model_output = self.client.step(example=example, step=self.step_count)
         raw_action = model_output["raw_action"]

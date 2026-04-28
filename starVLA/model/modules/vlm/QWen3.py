@@ -53,14 +53,13 @@ class _QWen3_VL_Interface(nn.Module):
 
         qwenvl_config = config.framework.get("qwenvl", {})
         model_id = qwenvl_config.get("base_vlm", "Qwen/Qwen3-VL-4B-Instruct")
-        memory_mode = qwenvl_config.get('memory', False)
+        memory_mode = qwenvl_config.get('memory', True)
         max_memory_step = qwenvl_config.get('max_memory_step', 5)
-        if memory_mode:
-            pass
         model = Qwen3VLForConditionalGeneration.from_pretrained(
             model_id,
             attn_implementation="flash_attention_2",
             dtype=torch.bfloat16,
+            memory_mode=memory_mode,
         )
         model.model.memory_mode = memory_mode
         self.max_memory_step = max_memory_step

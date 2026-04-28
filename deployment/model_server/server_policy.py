@@ -16,9 +16,24 @@ def main(args) -> None:
     # server = WebsocketPolicyServer(policy, host="localhost", port=10091)
     # server.serve_forever()
 
-    vla = baseframework.from_pretrained( # TODO should auto detect framework from model path
-        args.ckpt_path,
+    framework_cls = baseframework
+    ckpt_path_lower = args.ckpt_path.lower()
+    framework_detectors = (
+        ("rynnbrain", "starVLA.model.framework.RynnBrainOFT", "RynnBrain_OFT"),
+        ("gr00t", "starVLA.model.framework.QwenGR00T", "Qwen_GR00T"),
+        ("qwenpi", "starVLA.model.framework.QwenPI", "Qwen_PI"),
+        ("qwen_pi", "starVLA.model.framework.QwenPI", "Qwen_PI"),
+        ("qwenfast", "starVLA.model.framework.QwenFast", "Qwenvl_Fast"),
+        ("qwenoft", "starVLA.model.framework.QwenOFT_memory", "Qwenvl_OFT"),
+        ("oft", "starVLA.model.framework.QwenOFT_memory", "Qwenvl_OFT"),
     )
+    for pattern, module_name, class_name in framework_detectors:
+        if pattern in ckpt_path_lower:
+            module = __import__(module_name, fromlist=[class_name])
+            framework_cls = getattr(module, class_name)
+            break
+
+    vla = framework_cls.from_pretrained(args.ckpt_path)
 
     if args.use_bf16: # False
         vla = vla.to(torch.bfloat16)

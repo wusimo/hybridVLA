@@ -46,7 +46,7 @@ def build_framework(cfg):
         cfg.framework.name = cfg.framework.framework_py  # Backward compatibility for legacy config yaml
         
     if cfg.framework.name == "QwenOFT":
-        from starVLA.model.framework.QwenOFT import Qwenvl_OFT
+        from starVLA.model.framework.QwenOFT_memory import Qwenvl_OFT
         return Qwenvl_OFT(cfg)
     elif cfg.framework.name == "QwenFast":
         from starVLA.model.framework.QwenFast import Qwenvl_Fast

@@ -165,8 +165,12 @@ class ModelClient:
 
 
     def _resize_image(self, image: np.ndarray) -> np.ndarray:
-        image = cv.resize(image, tuple(self.image_size), interpolation=cv.INTER_AREA)
-        return image
+        # Use PIL resize to stay consistent with the training dataloader
+        # (`Image.fromarray(x).resize((224, 224))`, BICUBIC by default). Also
+        # returns a writable array so the HF image processor does not emit the
+        # "non-writable NumPy array" PyTorch warning.
+        resized = Image.fromarray(image).resize(tuple(self.image_size))
+        return np.ascontiguousarray(np.asarray(resized))
 
     def visualize_epoch(
         self, predicted_raw_actions: Sequence[np.ndarray], images: Sequence[np.ndarray], save_path: str
