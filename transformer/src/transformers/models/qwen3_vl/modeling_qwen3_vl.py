@@ -893,7 +893,7 @@ class Qwen3VLModel(Qwen3VLPreTrainedModel):
     config: Qwen3VLConfig
     _no_split_modules = ["Qwen3VLTextDecoderLayer", "Qwen3VLVisionBlock"]
 
-    def __init__(self, config, memory_mode=False):
+    def __init__(self, config, memory_mode=False, max_memory_step=5):
         super().__init__(config)
         print("myqwen3VL")
         self.visual = Qwen3VLVisionModel._from_config(config.vision_config)
@@ -902,7 +902,7 @@ class Qwen3VLModel(Qwen3VLPreTrainedModel):
         self.memory_mode = memory_mode
         if self.memory_mode:
             self.memory = ShortTermMemoryBank(dim=config.vision_config.out_hidden_size,
-                                              num_timesteps=5)
+                                              num_timesteps=max_memory_step)
         # Initialize weights and apply final processing
         self.post_init()
 
@@ -1355,9 +1355,9 @@ class Qwen3VLForConditionalGeneration(Qwen3VLPreTrainedModel, GenerationMixin):
     accepts_loss_kwargs = False
     config: Qwen3VLConfig
 
-    def __init__(self, config, memory_mode=False):
+    def __init__(self, config, memory_mode=False, max_memory_step=5):
         super().__init__(config)
-        self.model = Qwen3VLModel(config, memory_mode=memory_mode)
+        self.model = Qwen3VLModel(config, memory_mode=memory_mode, max_memory_step=max_memory_step)
         self.lm_head = nn.Linear(config.text_config.hidden_size, config.text_config.vocab_size, bias=False)
 
         self.post_init()

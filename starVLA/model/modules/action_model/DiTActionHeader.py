@@ -84,6 +84,7 @@ class ActionModel(nn.Module):
         in_channels,
         future_action_window_size,
         past_action_window_size,
+        n_condition_token=64,
         diffusion_steps=100,
         noise_schedule="squaredcos_cap_v2",
     ):
@@ -125,6 +126,7 @@ class ActionModel(nn.Module):
             learn_sigma=learn_sigma,
             future_action_window_size=future_action_window_size,
             past_action_window_size=past_action_window_size,
+            n_conditon_token=n_condition_token,
         )
 
     def forward(self, gt_action, condition, **kwargs):
@@ -211,6 +213,7 @@ def get_action_model(model_typ="DiT-B", config=None):
     action_dim = action_model_cfg.action_dim
     future_action_window_size = action_model_cfg.future_action_window_size
     past_action_window_size = action_model_cfg.past_action_window_size
+    n_condition_token = action_model_cfg.get("n_condition_token", 64)
 
     return ActionModel(
         model_type=model_type,  # Model type, e.g., 'DiT-B'
@@ -218,4 +221,5 @@ def get_action_model(model_typ="DiT-B", config=None):
         in_channels=action_dim,  # Input channel size
         future_action_window_size=future_action_window_size,  # Future action window size
         past_action_window_size=past_action_window_size,  # Past action window size
+        n_condition_token=n_condition_token,
     )

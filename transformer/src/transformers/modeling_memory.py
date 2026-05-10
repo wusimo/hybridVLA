@@ -133,7 +133,6 @@ class ShortTermMemoryBank(nn.Module):
         assert memory.dim() == 6, f"memory must be [B,3,T,2,64,D], got {memory.shape}"
         assert visual.dim() == 5, f"visual must be [B,3,2,64,D], got {visual.shape}"
         B, L, T, V, S, D = memory.shape
-        print(memory.shape)
         assert L == self.num_levels
         assert T == self.num_timesteps
         assert V == 2

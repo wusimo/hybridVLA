@@ -55,6 +55,10 @@ trainer:
     base: 1.0e-05
     vlm_interface: 5.0e-06
     action_model: 5.0e-05
+  weight_decay_groups:
+    base: 1.0e-08
+    vlm_interface: 1.0e-08
+    action_model: 0.05
   lr_scheduler_type: cosine_with_min_lr
   scheduler_specific_kwargs:
     min_lr: 1.0e-06
@@ -77,4 +81,4 @@ trainer:
   resume_epoch: null
   resume_step: null
   enable_gradient_checkpointing: true
-  enable_mixed_precision_training: true  
+  enable_mixed_precision_training: true

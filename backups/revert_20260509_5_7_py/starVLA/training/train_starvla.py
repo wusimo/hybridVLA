@@ -92,7 +92,10 @@ def setup_optimizer_and_scheduler(model, cfg) -> Tuple[torch.optim.Optimizer, to
 
     if dist.is_initialized() and dist.get_rank() == 0:
         for group in optimizer.param_groups:
-            logger.info(f"LR Group {group['name']}: lr={group['lr']}, num_params={len(group['params'])}")
+            logger.info(
+                f"LR Group {group['name']}: lr={group['lr']}, "
+                f"weight_decay={group['weight_decay']}, num_params={len(group['params'])}"
+            )
 
     lr_scheduler = get_scheduler(
         name=cfg.trainer.lr_scheduler_type,
@@ -200,7 +203,9 @@ class VLATrainer(TrainerUtils):
             for _ in range(self.completed_steps):
                 self.lr_scheduler.step()
             logger.info(
-                f"LR scheduler adjusted to step {self.completed_steps}, current LR: {self.lr_scheduler.get_last_lr()}"
+                f"LR scheduler adjusted to step {self.completed_steps}, "
+                f"action_model LR: {self.get_learning_rate_for_group('action_model')}, "
+                f"all LRs: {self.lr_scheduler.get_last_lr()}"
             )
 
     def _load_checkpoint(self, checkpoint_path):
@@ -240,7 +245,7 @@ class VLATrainer(TrainerUtils):
     def _log_metrics(self, metrics):
         """Record training metrics."""
         if self.completed_steps % self.config.trainer.logging_frequency == 0 and dist.get_rank() == 0:
-            metrics["learning_rate"] = self.lr_scheduler.get_last_lr()[0]
+            metrics["learning_rate"] = self.get_learning_rate_for_group("action_model")
             metrics["epoch"] = round(self.completed_steps / len(self.vla_train_dataloader), 2)
             wandb.log(metrics, step=self.completed_steps)
             logger.info(f"Step {self.completed_steps}, Loss: {metrics})")
@@ -292,14 +297,23 @@ class VLATrainer(TrainerUtils):
                     }
                 )
 
-            if self.completed_steps % self.config.trainer.eval_interval == 0:
+            if (
+                self.accelerator.sync_gradients
+                and self.completed_steps > 0
+                and self.completed_steps % self.config.trainer.eval_interval == 0
+            ):
                 step_metrics = self.eval_action_model(step_metrics)
 
-            step_metrics["data_time"] = t_end_data - t_start_data
-            step_metrics["model_time"] = t_end_model - t_start_model
-            self._log_metrics(step_metrics)
+            if self.accelerator.sync_gradients:
+                step_metrics["data_time"] = t_end_data - t_start_data
+                step_metrics["model_time"] = t_end_model - t_start_model
+                self._log_metrics(step_metrics)
 
-            if self.completed_steps % self.config.trainer.save_interval == 0 and self.completed_steps > 0:
+            if (
+                self.accelerator.sync_gradients
+                and self.completed_steps % self.config.trainer.save_interval == 0
+                and self.completed_steps > 0
+            ):
                 self._save_checkpoint()
 
             if self.completed_steps >= self.config.trainer.max_train_steps:

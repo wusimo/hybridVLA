@@ -60,6 +60,7 @@ class _QWen3_VL_Interface(nn.Module):
             attn_implementation="flash_attention_2",
             dtype=torch.bfloat16,
             memory_mode=memory_mode,
+            max_memory_step=max_memory_step,
         )
         model.model.memory_mode = memory_mode
         self.max_memory_step = max_memory_step

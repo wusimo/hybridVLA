@@ -44,6 +44,7 @@ class _RynnBrain_Interface(nn.Module):
             torch_dtype=torch.bfloat16,
             attn_implementation="flash_attention_2",
             memory_mode=memory_mode,
+            max_memory_step=max_memory_step,
         )
         self.max_memory_step = max_memory_step
         self.processor = AutoProcessor.from_pretrained(
