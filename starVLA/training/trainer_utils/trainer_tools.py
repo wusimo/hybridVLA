@@ -147,6 +147,21 @@ import torch.distributed as dist
 
 
 class TrainerUtils:
+    def get_learning_rate_for_group(self, group_name="action_model"):
+        """Return the scheduler LR for a named optimizer param group."""
+        last_lrs = self.lr_scheduler.get_last_lr()
+        param_groups = self.optimizer.param_groups
+
+        for index, group in enumerate(param_groups):
+            if group.get("name") == group_name and index < len(last_lrs):
+                return last_lrs[index]
+
+        if last_lrs:
+            return last_lrs[0]
+        if param_groups:
+            return param_groups[0].get("lr", 0.0)
+        return 0.0
+
     @staticmethod
     def freeze_backbones(model, freeze_modules=""):
         """

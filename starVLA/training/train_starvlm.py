@@ -199,7 +199,7 @@ class VLAMTrainer(TrainerUtils):
     def _log_metrics(self, metrics):
         """Record training metrics."""
         if self.completed_steps % self.config.trainer.logging_frequency == 0 and dist.get_rank() == 0:
-            metrics["learning_rate"] = self.lr_scheduler.get_last_lr()[0]
+            metrics["learning_rate"] = self.get_learning_rate_for_group("action_model")
             if hasattr(self.vlm_train_dataloader, "__len__"):
                 dataloader_length = len(self.vlm_train_dataloader)
                 if dataloader_length:
