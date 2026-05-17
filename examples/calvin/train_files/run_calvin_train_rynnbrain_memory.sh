@@ -24,7 +24,7 @@ DIT_TYPE="DiT-B"
 calvin_data_root=/mnt/data/jiangnan/lerobot
 data_mix=calvin_task_ABC_D
 run_root_dir=./results/Checkpoints
-run_id=starvla_rynnbrain_calvin_task_ABC_D_memory_dit_inter5_step10
+run_id=starvla_rynnbrain_calvin_task_ABC_D_memory_dit_inter5_step5_0514
 export action_input_dim=2048
 
 NUM_PROCESSES=8
@@ -33,7 +33,7 @@ PER_DEVICE_BATCH_SIZE=4
 GRAD_ACCUM_STEPS=8
 #original memory steps is 10
 MEMORY_STEPS=5
-MEMORY_INTERVAL=10
+MEMORY_INTERVAL=5
 NUM_WORKERS_PER_PROCESS=1
 PREFETCH_FACTOR=2
 EVAL_INTERVAL=1000
